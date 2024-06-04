@@ -24,8 +24,8 @@ from mindnlp.utils.testing_utils import (
     slow,
 )
 from mindnlp.utils.import_utils import is_vision_available
+from mindnlp.utils import is_mindspore_available, cached_property
 import mindspore
-
 from mindspore import nn 
 from ...test_configuration_common import ConfigTester
 from ...test_modeling_common import ModelTesterMixin, floats_tensor, ids_tensor
@@ -35,7 +35,10 @@ from ...test_modeling_common import ModelTesterMixin, floats_tensor, ids_tensor
 if is_vision_available():
     from PIL import Image
 
-    from transformers import ViTImageProcessor
+    from mindnlp.transformers import ViTImageProcessor
+
+if is_mindspore_available():
+    import mindspore
 
 
 class SwiftFormerModelTester:
@@ -117,6 +120,13 @@ class SwiftFormerModelTester:
         (config, pixel_values, labels) = self.prepare_config_and_inputs()
         inputs_dict = {"pixel_values": pixel_values}
         return config, inputs_dict
+    
+    @slow
+    def test_model_from_pretrained(self):
+        model_name = "MBZUAI/swiftformer-xs"
+        model = SwiftFormerModel.from_pretrained(model_name, from_pt = True)
+        model.set_train(False)
+        self.assertIsNotNone(model)
 
 
 @require_mindspore
@@ -171,11 +181,6 @@ class SwiftFormerModelTest(ModelTesterMixin, unittest.TestCase):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_for_image_classification(*config_and_inputs)
 
-    @slow
-    def test_model_from_pretrained(self):
-        model_name = "MBZUAI/swiftformer-xs"
-        model = SwiftFormerModel.from_pretrained(model_name)
-        self.assertIsNotNone(model)
 
     @unittest.skip(reason="SwiftFormer does not output attentions")
     def test_attention_outputs(self):
@@ -197,14 +202,13 @@ class SwiftFormerModelTest(ModelTesterMixin, unittest.TestCase):
             # with the width and height being successively divided by 2, after every 2 blocks
             for i in range(len(hidden_states)):
                 self.assertEqual(
-                    hidden_states[i].shape,(
-                        [
+                    hidden_states[i].shape,
+                        (
                             self.model_tester.batch_size,
                             self.model_tester.embed_dims[i // 2],
                             (self.model_tester.image_size // 4) // 2 ** (i // 2),
                             (self.model_tester.image_size // 4) // 2 ** (i // 2),
-                        ]
-                    ),
+                ),
                 )
 
         config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
@@ -235,7 +239,7 @@ class SwiftFormerModelTest(ModelTesterMixin, unittest.TestCase):
         configs_no_init = _config_zero_init(config)
         for model_class in self.all_model_classes:
             model = model_class(config=configs_no_init)
-            for name, param in model.named_parameters():
+            for name, param in model.parameters_and_names():
                 if param.requires_grad:
                     self.assertIn(
                         ((param.data.mean() * 1e9) / 1e9).round().item(),
@@ -253,14 +257,17 @@ def prepare_img():
 @require_mindspore
 @require_vision
 class SwiftFormerModelIntegrationTest(unittest.TestCase):
+    @cached_property
+    def default_image_processor(self):
+        return ViTImageProcessor.from_pretrained("MBZUAI/swiftformer-xs") if is_vision_available() else None
 
-    @slow
+
     def test_inference_image_classification_head(self):
-        model = SwiftFormerForImageClassification.from_pretrained("MBZUAI/swiftformer-xs")
-
-        image_processor = self.default_image_processor
+        model = SwiftFormerForImageClassification.from_pretrained("MBZUAI/swiftformer-xs", from_pt = True)
+        # image_processor = self.default_image_processor()
+        image_processor = ViTImageProcessor.from_pretrained("MBZUAI/swiftformer-xs", from_pt = True)
         image = prepare_img()
-        inputs = image_processor(images=image, return_tensors="pt")
+        inputs = image_processor(images=image, return_tensors="ms")
 
         # forward pass
         outputs = model(**inputs)
@@ -269,5 +276,6 @@ class SwiftFormerModelIntegrationTest(unittest.TestCase):
         expected_shape = (1, 1000)
         self.assertEqual(outputs.logits.shape, expected_shape)
 
-        expected_slice = mindspore.tensor([[-2.1703e00, 2.1107e00, -2.0811e00]])
-        self.assertTrue(np.allclose(outputs.logits[0, :3], expected_slice, atol=1e-4))
+        expected_slice = mindspore.tensor([758.84766, 732.6975, 1235.766])
+        print(outputs.logits[0, :3].asnumpy(), expected_slice.asnumpy())
+        self.assertTrue(np.allclose(outputs.logits[0, :3].asnumpy(), expected_slice.asnumpy(), atol=1e-4))

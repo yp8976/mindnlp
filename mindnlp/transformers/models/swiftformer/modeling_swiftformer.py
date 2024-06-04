@@ -16,12 +16,10 @@
 
 import collections.abc
 from typing import Optional, Tuple, Union
-
-import torch
-
-import mindspore
 from mindspore import nn, ops
-from mindspore.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+from mindspore.common.initializer import initializer, TruncatedNormal, Constant
+import mindspore
+from mindnlp.utils import logging
 
 from ...activations import ACT2CLS
 from ...modeling_outputs import (
@@ -29,9 +27,7 @@ from ...modeling_outputs import (
     ImageClassifierOutputWithNoAttention,
 )
 from ...modeling_utils import PreTrainedModel
-from mindnlp.utils import (
-    logging,
-)
+
 from .configuration_swiftformer import SwiftFormerConfig
 
 
@@ -91,7 +87,7 @@ def drop_path(input: mindspore.Tensor, drop_prob: float = 0.0, training: bool = 
         return input
     keep_prob = 1 - drop_prob
     shape = (input.shape[0],) + (1,) * (input.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
-    random_tensor = keep_prob + ops.rand(shape, dtype=input.dtype, device=input.device)
+    random_tensor = keep_prob + ops.rand(shape, dtype=input.dtype)
     random_tensor.floor_()  # binarize
     output = input.div(keep_prob) * random_tensor
     return output
@@ -135,6 +131,9 @@ class SwiftFormerEmbeddings(nn.Cell):
         stride = stride if isinstance(stride, collections.abc.Iterable) else (stride, stride)
         padding = padding if isinstance(padding, collections.abc.Iterable) else (padding, padding)
 
+        if len(padding) == 2:
+            padding = (padding[0], padding[0], padding[1], padding[1])
+
         self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=stride, padding=padding, pad_mode='pad')
         self.norm = nn.BatchNorm2d(embed_dim, eps=config.batch_norm_eps)
 
@@ -163,7 +162,7 @@ class SwiftFormerConvEncoder(nn.Cell):
         self.act = nn.GELU()
         self.point_wise_conv2 = nn.Conv2d(hidden_dim, dim, kernel_size=1, pad_mode='pad')
         self.drop_path = nn.Dropout(p=config.drop_conv_encoder_rate)
-        self.layer_scale = nn.Parameter(ops.ones(dim).unsqueeze(-1).unsqueeze(-1), requires_grad=True)
+        self.layer_scale = mindspore.Parameter(ops.ones(dim).unsqueeze(-1).unsqueeze(-1), requires_grad=True)
 
     def construct(self, x):
         input = x
@@ -189,10 +188,14 @@ class SwiftFormerMlp(nn.Cell):
         super().__init__()
         hidden_features = int(in_features * config.mlp_ratio)
         self.norm1 = nn.BatchNorm2d(in_features, eps=config.batch_norm_eps)
-        self.fc1 = nn.Conv2d(in_features, hidden_features, 1, pad_mode='pad')
-        act_layer = ACT2CLS[config.hidden_act]
+        self.fc1 = nn.Conv2d(in_features, hidden_features, 1, pad_mode='pad',has_bias=True)
+        act_layer = ACT2CLS["gelu_new"]
         self.act = act_layer()
-        self.fc2 = nn.Conv2d(hidden_features, in_features, 1, pad_mode='pad')
+        # if isinstance(config.hidden_act, str):
+        #     self.act_layer = ACT2CLS[config.hidden_act]
+        # else:
+        #     self.act_layer = config.hidden_act
+        self.fc2 = nn.Conv2d(hidden_features, in_features, 1, pad_mode='pad', has_bias=True)
         self.drop = nn.Dropout(p=config.drop_mlp_rate)
 
     def construct(self, x):
@@ -228,13 +231,13 @@ class SwiftFormerEfficientAdditiveAttention(nn.Cell):
     def construct(self, x):
         query = self.to_query(x)
         key = self.to_key(x)
-        
-        query = ops.L2Normalize()(query, axis=-1)
-        key = ops.L2Normalize()(key, axis=-1)
+        l2 = ops.L2Normalize(axis=-1)
+        query = l2(query)
+        key = l2(key)
 
         query_weight = query @ self.w_g
         scaled_query_weight = query_weight * self.scale_factor
-        scaled_query_weight = scaled_query_weight.softmax(dim=-1)
+        scaled_query_weight = ops.softmax(scaled_query_weight,axis=-1)
 
         global_queries = ops.sum(scaled_query_weight * query, dim=1)
         global_queries = global_queries.unsqueeze(1).repeat(1, key.shape[1], 1)
@@ -257,11 +260,11 @@ class SwiftFormerLocalRepresentation(nn.Cell):
     def __init__(self, config: SwiftFormerConfig, dim: int):
         super().__init__()
 
-        self.depth_wise_conv = nn.Conv2d(dim, dim, kernel_size=3, padding=1, group=dim, pad_mode='pad')
+        self.depth_wise_conv = nn.Conv2d(dim, dim, kernel_size=3, padding=1, group=dim, pad_mode='pad', has_bias=True)
         self.norm = nn.BatchNorm2d(dim, eps=config.batch_norm_eps)
-        self.point_wise_conv1 = nn.Conv2d(dim, dim, kernel_size=1, pad_mode='pad')
+        self.point_wise_conv1 = nn.Conv2d(dim, dim, kernel_size=1, pad_mode='pad', has_bias=True)
         self.act = nn.GELU()
-        self.point_wise_conv2 = nn.Conv2d(dim, dim, kernel_size=1, pad_mode='pad')
+        self.point_wise_conv2 = nn.Conv2d(dim, dim, kernel_size=1, pad_mode='pad', has_bias=True)
         self.drop_path = nn.Identity()
         self.layer_scale = mindspore.Parameter(ops.ones(dim).unsqueeze(-1).unsqueeze(-1), requires_grad=True)
 
@@ -404,7 +407,7 @@ class SwiftFormerEncoder(nn.Cell):
 
 
 class SwiftFormerPreTrainedModel(PreTrainedModel):
-    """
+    """default_image_processor
     An abstract class to handle weights initialization and a simple interface for downloading and loading pretrained
     models.
     """
@@ -417,13 +420,13 @@ class SwiftFormerPreTrainedModel(PreTrainedModel):
 
     def _init_weights(self, module: Union[nn.Dense, nn.Conv2d, nn.LayerNorm]) -> None:
         """Initialize the weights"""
-        if isinstance(module, (nn.Conv2d, nn.Linear)):
-            module.weight = mindspore.common.initializer.TruncatedNormal(sigma=0.02)
+        if isinstance(module, (nn.Conv2d, nn.Dense)):
+            module.weight.set_data(initializer(TruncatedNormal(sigma=0.02), module.weight.shape, module.weight.dtype))
             if module.bias is not None:
-                module.bias = mindspore.common.initializer.Constant(value=0)
+                module.bias.set_data(initializer(Constant(value=0), module.bias.shape, module.bias.dtype))
         elif isinstance(module, (nn.LayerNorm)):
-            module.bias = mindspore.common.initializer.Constant(value=0)
-            module.weight = mindspore.common.initializer.Constant(value=1.0)
+            module.bias.set_data(initializer(Constant(value=0), module.bias.shape, module.bias.dtype))
+            module.weight.set_data(initializer(Constant(value=1.0), module.weight.shape, module.weight.dtype))
 
 
 SWIFTFORMER_START_DOCSTRING = r"""
@@ -467,7 +470,6 @@ class SwiftFormerModel(SwiftFormerPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BaseModelOutputWithNoAttention]:
-        r""" """
 
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -536,7 +538,8 @@ class SwiftFormerForImageClassification(SwiftFormerPreTrainedModel):
 
         # run classification head
         sequence_output = self.norm(sequence_output)
-        sequence_output = sequence_output.flatten(2).mean(-1)
+        sequence_output = sequence_output.flatten(start_dim=2).mean(-1)
+
         cls_out = self.head(sequence_output)
         distillation_out = self.dist_head(sequence_output)
         logits = (cls_out + distillation_out) / 2
@@ -547,23 +550,20 @@ class SwiftFormerForImageClassification(SwiftFormerPreTrainedModel):
             if self.config.problem_type is None:
                 if self.num_labels == 1:
                     self.config.problem_type = "regression"
-                elif self.num_labels > 1 and (labels.dtype == mindspore.long or labels.dtype == mindspore.int):
+                elif self.num_labels > 1 and labels.dtype in (mindspore.int64, mindspore.int32):
                     self.config.problem_type = "single_label_classification"
                 else:
                     self.config.problem_type = "multi_label_classification"
 
             if self.config.problem_type == "regression":
-                loss_fct = MSELoss()
                 if self.num_labels == 1:
-                    loss = loss_fct(logits.squeeze(), labels.squeeze())
+                    loss = ops.mse_loss(logits.squeeze(), labels.squeeze())
                 else:
-                    loss = loss_fct(logits, labels)
+                    loss = ops.mse_loss(logits, labels)
             elif self.config.problem_type == "single_label_classification":
-                loss_fct = CrossEntropyLoss()
-                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+                loss = ops.cross_entropy(logits.view(-1, self.num_labels), labels.view(-1))
             elif self.config.problem_type == "multi_label_classification":
-                loss_fct = BCEWithLogitsLoss()
-                loss = loss_fct(logits, labels)
+                loss = ops.binary_cross_entropy_with_logits(logits, labels)
 
         if not return_dict:
             output = (logits,) + outputs[1:]
@@ -574,5 +574,8 @@ class SwiftFormerForImageClassification(SwiftFormerPreTrainedModel):
             logits=logits,
             hidden_states=outputs.hidden_states,
         )
-    
-__all__=["SwiftFormerForImageClassification","SwiftFormerPatchEmbedding","SwiftFormerDropPath","SwiftFormerEmbeddings","SwiftFormerConvEncoder","SwiftFormerMlp","SwiftFormerEfficientAdditiveAttention","SwiftFormerLocalRepresentation","SwiftFormerEncoderBlock","SwiftFormerStage","SwiftFormerModel","SwiftFormerPreTrainedModel"]
+
+__all__=["SwiftFormerModel",
+        "SwiftFormerForImageClassification",
+        "SwiftFormerPreTrainedModel",
+    ]
