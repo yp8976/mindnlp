@@ -107,6 +107,7 @@ MODEL_MAPPING_NAMES = OrderedDict(
         ("openelm", "OpenELMModel"),
         ("opt", "OPTModel"),
         ("pegasus", "PegasusModel"),
+        ("pegasus_x", "PegasusXModel"),
         ("phi", "PhiModel"),
         ("phi3", "Phi3Model"),
         ("qwen2", "Qwen2Model"),
@@ -416,6 +417,7 @@ MODEL_FOR_ZERO_SHOT_OBJECT_DETECTION_MAPPING_NAMES = OrderedDict(
 MODEL_FOR_DEPTH_ESTIMATION_MAPPING_NAMES = OrderedDict(
     [
         # Model for depth estimation mapping
+        ("depth_anything", "DepthAnythingForDepthEstimation"),
         ("dpt", "DPTForDepthEstimation"),
         ("glpn", "GLPNForDepthEstimation"),
     ]

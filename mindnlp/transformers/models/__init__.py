@@ -62,6 +62,7 @@ from . import (
     deberta,
     deberta_v2,
     decision_transformer,
+    depth_anything,
     distilbert,
     efficientnet,
     efficientformer,
@@ -124,6 +125,7 @@ from . import (
     opt,
     owlvit,
     pegasus,
+    pegasus_x,
     phi,
     phi3,
     poolformer,
@@ -217,6 +219,7 @@ from .data2vec import *
 from .deberta import *
 from .deberta_v2 import *
 from .decision_transformer import *
+from .depth_anything import *
 from .distilbert import *
 from .efficientnet import *
 from .efficientformer import *
@@ -279,6 +282,7 @@ from .openelm import *
 from .opt import *
 from .owlvit import *
 from .pegasus import *
+from .pegasus_x import *
 from .phi import *
 from .phi3 import *
 from .poolformer import *
@@ -372,6 +376,7 @@ __all__.extend(data2vec.__all__)
 __all__.extend(deberta.__all__)
 __all__.extend(deberta_v2.__all__)
 __all__.extend(decision_transformer.__all__)
+__all__.extend(depth_anything.__all__)
 __all__.extend(distilbert.__all__)
 __all__.extend(efficientnet.__all__)
 __all__.extend(efficientformer.__all__)
@@ -434,6 +439,7 @@ __all__.extend(openelm.__all__)
 __all__.extend(opt.__all__)
 __all__.extend(owlvit.__all__)
 __all__.extend(pegasus.__all__)
+__all__.extend(pegasus_x.__all__)
 __all__.extend(phi.__all__)
 __all__.extend(phi3.__all__)
 __all__.extend(poolformer.__all__)
