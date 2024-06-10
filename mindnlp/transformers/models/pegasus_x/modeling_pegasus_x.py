@@ -1012,11 +1012,11 @@ class PegasusXEncoder(PegasusXPreTrainedModel):
         # Setup mask
         if attention_mask is None:
             attention_mask = ops.ones(*input_shape, dtype=inputs_embeds.dtype)
-        attention_mask = attention_mask
-        mask_min_value = finfo(hidden_states.dtype).min
+        attention_mask = mindspore.Tensor(attention_mask, dtype=hidden_states.dtype) 
+        mask_min_value = np.finfo(mindspore.dtype_to_nptype(hidden_states.dtype)).min
         inverted_mask = 1.0 - attention_mask
         attention_mask = inverted_mask.masked_fill(
-            inverted_mask,
+            inverted_mask.to(mindspore.bool_),
             mask_min_value,
         )
 
@@ -1028,7 +1028,7 @@ class PegasusXEncoder(PegasusXPreTrainedModel):
 
         # Global tokens
         global_hidden_states = self.embed_global(
-            ops.arange(self.config.num_global_tokens)[None].broadcast_to(batch_size, -1)
+            ops.arange(self.config.num_global_tokens)[None].expand(batch_size, -1)
         )
 
         encoder_states = () if output_hidden_states else None
