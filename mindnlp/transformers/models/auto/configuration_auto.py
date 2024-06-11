@@ -108,6 +108,7 @@ CONFIG_MAPPING_NAMES = OrderedDict(
         ("oneformer", "OneFormerConfig"),
         ("openelm", "OpenELMConfig"),
         ("opt", "OPTConfig"),
+        ("owlv2", "OwlV2Config"),
         ("owlvit", "OwlViTConfig"),
         ("pegasus", "PegasusConfig"),
         ("phi", "PhiConfig"),
