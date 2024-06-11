@@ -107,9 +107,9 @@ class Owlv2Output(ModelOutput):
 def _upcast(t: Tensor) -> Tensor:
     # Protects from numerical overflows in multiplications by upcasting to the equivalent higher type
     if t.is_floating_point():
-        return t if t.dtype in (ms.float32, ms.float64) else t.float()
+        return t if t.dtype in (ms.float32, ms.float64) else t.astype(ms.float32)
     else:
-        return t if t.dtype in (ms.int32, ms.int64) else t.int()
+        return t if t.dtype in (ms.int32, ms.int64) else t.astype(ms.int32)
 
 
 # Copied from transformers.models.detr.modeling_detr.box_area
