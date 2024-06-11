@@ -16,13 +16,12 @@
 
 import os
 from typing import TYPE_CHECKING, Dict, Union
+from ...configuration_utils import PretrainedConfig
+from ....utils import logging
 
 
 if TYPE_CHECKING:
     pass
-
-from mindnlp.utils import logging
-from ...configuration_utils import PretrainedConfig
 
 
 logger = logging.get_logger(__name__)
@@ -109,7 +108,12 @@ class Owlv2TextConfig(PretrainedConfig):
         eos_token_id=49407,
         **kwargs,
     ):
-        super().__init__(pad_token_id=pad_token_id, bos_token_id=bos_token_id, eos_token_id=eos_token_id, **kwargs)
+        super().__init__(
+            pad_token_id=pad_token_id,
+            bos_token_id=bos_token_id,
+            eos_token_id=eos_token_id,
+            **kwargs,
+        )
 
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
@@ -124,16 +128,22 @@ class Owlv2TextConfig(PretrainedConfig):
         self.initializer_factor = initializer_factor
 
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path: Union[str, os.PathLike], **kwargs) -> "PretrainedConfig":
-        cls._set_token_in_kwargs(kwargs)
-
-        config_dict, kwargs = cls.get_config_dict(pretrained_model_name_or_path, **kwargs)
+    def from_pretrained(
+        cls, pretrained_model_name_or_path: Union[str, os.PathLike], **kwargs
+    ) -> "PretrainedConfig":
+        config_dict, kwargs = cls.get_config_dict(
+            pretrained_model_name_or_path, **kwargs
+        )
 
         # get the text config dict if we are loading from Owlv2Config
         if config_dict.get("model_type") == "owlv2":
             config_dict = config_dict["text_config"]
 
-        if "model_type" in config_dict and hasattr(cls, "model_type") and config_dict["model_type"] != cls.model_type:
+        if (
+            "model_type" in config_dict
+            and hasattr(cls, "model_type")
+            and config_dict["model_type"] != cls.model_type
+        ):
             logger.warning(
                 f"You are using a model of type {config_dict['model_type']} to instantiate a model of type "
                 f"{cls.model_type}. This is not supported for all configurations of models and can yield errors."
@@ -230,16 +240,22 @@ class Owlv2VisionConfig(PretrainedConfig):
         self.initializer_factor = initializer_factor
 
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path: Union[str, os.PathLike], **kwargs) -> "PretrainedConfig":
-        cls._set_token_in_kwargs(kwargs)
-
-        config_dict, kwargs = cls.get_config_dict(pretrained_model_name_or_path, **kwargs)
+    def from_pretrained(
+        cls, pretrained_model_name_or_path: Union[str, os.PathLike], **kwargs
+    ) -> "PretrainedConfig":
+        config_dict, kwargs = cls.get_config_dict(
+            pretrained_model_name_or_path, **kwargs
+        )
 
         # get the vision config dict if we are loading from Owlv2Config
         if config_dict.get("model_type") == "owlv2":
             config_dict = config_dict["vision_config"]
 
-        if "model_type" in config_dict and hasattr(cls, "model_type") and config_dict["model_type"] != cls.model_type:
+        if (
+            "model_type" in config_dict
+            and hasattr(cls, "model_type")
+            and config_dict["model_type"] != cls.model_type
+        ):
             logger.warning(
                 f"You are using a model of type {config_dict['model_type']} to instantiate a model of type "
                 f"{cls.model_type}. This is not supported for all configurations of models and can yield errors."
@@ -290,11 +306,15 @@ class Owlv2Config(PretrainedConfig):
 
         if text_config is None:
             text_config = {}
-            logger.info("text_config is None. Initializing the Owlv2TextConfig with default values.")
+            logger.info(
+                "text_config is None. Initializing the Owlv2TextConfig with default values."
+            )
 
         if vision_config is None:
             vision_config = {}
-            logger.info("vision_config is None. initializing the Owlv2VisionConfig with default values.")
+            logger.info(
+                "vision_config is None. initializing the Owlv2VisionConfig with default values."
+            )
 
         self.text_config = Owlv2TextConfig(**text_config)
         self.vision_config = Owlv2VisionConfig(**vision_config)
@@ -305,12 +325,18 @@ class Owlv2Config(PretrainedConfig):
         self.initializer_factor = 1.0
 
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path: Union[str, os.PathLike], **kwargs) -> "PretrainedConfig":
-        cls._set_token_in_kwargs(kwargs)
+    def from_pretrained(
+        cls, pretrained_model_name_or_path: Union[str, os.PathLike], **kwargs
+    ) -> "PretrainedConfig":
+        config_dict, kwargs = cls.get_config_dict(
+            pretrained_model_name_or_path, **kwargs
+        )
 
-        config_dict, kwargs = cls.get_config_dict(pretrained_model_name_or_path, **kwargs)
-
-        if "model_type" in config_dict and hasattr(cls, "model_type") and config_dict["model_type"] != cls.model_type:
+        if (
+            "model_type" in config_dict
+            and hasattr(cls, "model_type")
+            and config_dict["model_type"] != cls.model_type
+        ):
             logger.warning(
                 f"You are using a model of type {config_dict['model_type']} to instantiate a model of type "
                 f"{cls.model_type}. This is not supported for all configurations of models and can yield errors."
@@ -333,8 +359,9 @@ class Owlv2Config(PretrainedConfig):
 
         return cls.from_dict(config_dict, **kwargs)
 
+
 __all__ = [
-    "OwlV2TextConfig",
-    "OwlV2VisionConfig",
-    "OwlV2Config",
+    "Owlv2Config",
+    "Owlv2TextConfig",
+    "Owlv2VisionConfig",
 ]

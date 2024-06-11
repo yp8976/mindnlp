@@ -12,30 +12,33 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""PyTorch OWLv2 model."""
+"""Mindspore OWLv2 model."""
 
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Dict, Optional, Tuple, Union
 
-import mindspore
-from mindspore.common.initializer import Normal
+import mindspore as ms
 from mindspore import Tensor, nn, ops
-
-from ...activations import ACT2FN
-from ...modeling_attn_mask_utils import _create_4d_causal_attention_mask, _prepare_4d_attention_mask
-from ...modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling
-from ...modeling_utils import PreTrainedModel
+from mindspore.common.initializer import Normal
 from mindnlp.utils import (
     ModelOutput,
-    is_vision_available,
+    is_mindspore_available,
     logging,
 )
+from ...activations import ACT2FN
+from ...modeling_attn_mask_utils import (
+    _create_4d_causal_attention_mask,
+    _prepare_4d_attention_mask,
+)
+from ...modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling
+from ...modeling_utils import PreTrainedModel
+
 from .configuration_owlv2 import Owlv2Config, Owlv2TextConfig, Owlv2VisionConfig
 
 
-if is_vision_available():
-    from transformers.image_transforms import center_to_corners_format
+if is_mindspore_available():
+    from ...image_transforms import center_to_corners_format
 
 
 logger = logging.get_logger(__name__)
@@ -46,12 +49,15 @@ _CHECKPOINT_FOR_DOC = "google/owlv2-base-patch16-ensemble"
 
 
 # Copied from transformers.models.clip.modeling_clip.contrastive_loss with clip->owlv2
-def contrastive_loss(logits: mindspore.Tensor) -> mindspore.Tensor:
-    return nn.functional.cross_entropy(logits, ops.arange(len(logits)))
+def contrastive_loss(logits: ms.Tensor) -> ms.Tensor:
+    return ops.cross_entropy(
+        logits,
+        ops.arange(len(logits)),
+    )
 
 
 # Copied from transformers.models.clip.modeling_clip.clip_loss with clip->owlv2
-def owlv2_loss(similarity: mindspore.Tensor) -> mindspore.Tensor:
+def owlv2_loss(similarity: ms.Tensor) -> ms.Tensor:
     caption_loss = contrastive_loss(similarity)
     image_loss = contrastive_loss(similarity.t())
     return (caption_loss + image_loss) / 2.0
@@ -61,17 +67,17 @@ def owlv2_loss(similarity: mindspore.Tensor) -> mindspore.Tensor:
 class Owlv2Output(ModelOutput):
     """
     Args:
-        loss (`mindspore.Tensor` of shape `(1,)`, *optional*, returned when `return_loss` is `True`):
+        loss (`ms.Tensor` of shape `(1,)`, *optional*, returned when `return_loss` is `True`):
             Contrastive loss for image-text similarity.
-        logits_per_image (`mindspore.Tensor` of shape `(image_batch_size, text_batch_size)`):
+        logits_per_image (`ms.Tensor` of shape `(image_batch_size, text_batch_size)`):
             The scaled dot product scores between `image_embeds` and `text_embeds`. This represents the image-text
             similarity scores.
-        logits_per_text (`mindspore.Tensor` of shape `(text_batch_size, image_batch_size)`):
+        logits_per_text (`ms.Tensor` of shape `(text_batch_size, image_batch_size)`):
             The scaled dot product scores between `text_embeds` and `image_embeds`. This represents the text-image
             similarity scores.
-        text_embeds (`mindspore.Tensor` of shape `(batch_size * num_max_text_queries, output_dim`):
+        text_embeds (`ms.Tensor` of shape `(batch_size * num_max_text_queries, output_dim`):
             The text embeddings obtained by applying the projection layer to the pooled output of [`Owlv2TextModel`].
-        image_embeds (`mindspore.Tensor` of shape `(batch_size, output_dim`):
+        image_embeds (`ms.Tensor` of shape `(batch_size, output_dim`):
             The image embeddings obtained by applying the projection layer to the pooled output of
             [`Owlv2VisionModel`].
         text_model_output (Tuple[`BaseModelOutputWithPooling`]):
@@ -80,17 +86,19 @@ class Owlv2Output(ModelOutput):
             The output of the [`Owlv2VisionModel`].
     """
 
-    loss: Optional[mindspore.Tensor] = None
-    logits_per_image: mindspore.Tensor = None
-    logits_per_text: mindspore.Tensor = None
-    text_embeds: mindspore.Tensor = None
-    image_embeds: mindspore.Tensor = None
+    loss: Optional[ms.Tensor] = None
+    logits_per_image: ms.Tensor = None
+    logits_per_text: ms.Tensor = None
+    text_embeds: ms.Tensor = None
+    image_embeds: ms.Tensor = None
     text_model_output: BaseModelOutputWithPooling = None
     vision_model_output: BaseModelOutputWithPooling = None
 
     def to_tuple(self) -> Tuple[Any]:
         return tuple(
-            self[k] if k not in ["text_model_output", "vision_model_output"] else getattr(self, k).to_tuple()
+            self[k]
+            if k not in ["text_model_output", "vision_model_output"]
+            else getattr(self, k).to_tuple()
             for k in self.keys()
         )
 
@@ -99,9 +107,9 @@ class Owlv2Output(ModelOutput):
 def _upcast(t: Tensor) -> Tensor:
     # Protects from numerical overflows in multiplications by upcasting to the equivalent higher type
     if t.is_floating_point():
-        return t if t.dtype in (mindspore.float32, mindspore.float64) else t.astype(mindspore.float32)
+        return t if t.dtype in (ms.float32, ms.float64) else t.float()
     else:
-        return t if t.dtype in (mindspore.int32, mindspore.int64) else t.astype(mindspore.int32)
+        return t if t.dtype in (ms.int32, ms.int64) else t.int()
 
 
 # Copied from transformers.models.detr.modeling_detr.box_area
@@ -110,12 +118,12 @@ def box_area(boxes: Tensor) -> Tensor:
     Computes the area of a set of bounding boxes, which are specified by its (x1, y1, x2, y2) coordinates.
 
     Args:
-        boxes (`mindspore.Tensor` of shape `(number_of_boxes, 4)`):
+        boxes (`ms.Tensor` of shape `(number_of_boxes, 4)`):
             Boxes for which the area will be computed. They are expected to be in (x1, y1, x2, y2) format with `0 <= x1
             < x2` and `0 <= y1 < y2`.
 
     Returns:
-        `mindspore.Tensor`: a tensor containing the area for each box.
+        `ms.Tensor`: a tensor containing the area for each box.
     """
     boxes = _upcast(boxes)
     return (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
@@ -144,14 +152,18 @@ def generalized_box_iou(boxes1, boxes2):
     Generalized IoU from https://giou.stanford.edu/. The boxes should be in [x0, y0, x1, y1] (corner) format.
 
     Returns:
-        `mindspore.Tensor`: a [N, M] pairwise matrix, where N = len(boxes1) and M = len(boxes2)
+        `ms.Tensor`: a [N, M] pairwise matrix, where N = len(boxes1) and M = len(boxes2)
     """
     # degenerate boxes gives inf / nan results
     # so do an early check
     if not (boxes1[:, 2:] >= boxes1[:, :2]).all():
-        raise ValueError(f"boxes1 must be in [x0, y0, x1, y1] (corner) format, but got {boxes1}")
+        raise ValueError(
+            f"boxes1 must be in [x0, y0, x1, y1] (corner) format, but got {boxes1}"
+        )
     if not (boxes2[:, 2:] >= boxes2[:, :2]).all():
-        raise ValueError(f"boxes2 must be in [x0, y0, x1, y1] (corner) format, but got {boxes2}")
+        raise ValueError(
+            f"boxes2 must be in [x0, y0, x1, y1] (corner) format, but got {boxes2}"
+        )
     iou, union = box_iou(boxes1, boxes2)
 
     top_left = ops.minimum(boxes1[:, None, :2], boxes2[:, :2])
@@ -169,28 +181,28 @@ class Owlv2ObjectDetectionOutput(ModelOutput):
     Output type of [`Owlv2ForObjectDetection`].
 
     Args:
-        loss (`mindspore.Tensor` of shape `(1,)`, *optional*, returned when `labels` are provided)):
+        loss (`ms.Tensor` of shape `(1,)`, *optional*, returned when `labels` are provided)):
             Total loss as a linear combination of a negative log-likehood (cross-entropy) for class prediction and a
             bounding box loss. The latter is defined as a linear combination of the L1 loss and the generalized
             scale-invariant IoU loss.
         loss_dict (`Dict`, *optional*):
             A dictionary containing the individual losses. Useful for logging.
-        logits (`mindspore.Tensor` of shape `(batch_size, num_patches, num_queries)`):
+        logits (`ms.Tensor` of shape `(batch_size, num_patches, num_queries)`):
             Classification logits (including no-object) for all queries.
-        objectness_logits (`mindspore.Tensor` of shape `(batch_size, num_patches, 1)`):
+        objectness_logits (`ms.Tensor` of shape `(batch_size, num_patches, 1)`):
             The objectness logits of all image patches. OWL-ViT represents images as a set of image patches where the
             total number of patches is (image_size / patch_size)**2.
-        pred_boxes (`mindspore.Tensor` of shape `(batch_size, num_patches, 4)`):
+        pred_boxes (`ms.Tensor` of shape `(batch_size, num_patches, 4)`):
             Normalized boxes coordinates for all queries, represented as (center_x, center_y, width, height). These
             values are normalized in [0, 1], relative to the size of each individual image in the batch (disregarding
             possible padding). You can use [`~Owlv2ImageProcessor.post_process_object_detection`] to retrieve the
             unnormalized bounding boxes.
-        text_embeds (`mindspore.Tensor` of shape `(batch_size, num_max_text_queries, output_dim`):
+        text_embeds (`ms.Tensor` of shape `(batch_size, num_max_text_queries, output_dim`):
             The text embeddings obtained by applying the projection layer to the pooled output of [`Owlv2TextModel`].
-        image_embeds (`mindspore.Tensor` of shape `(batch_size, patch_size, patch_size, output_dim`):
+        image_embeds (`ms.Tensor` of shape `(batch_size, patch_size, patch_size, output_dim`):
             Pooled output of [`Owlv2VisionModel`]. OWLv2 represents images as a set of image patches and computes image
             embeddings for each patch.
-        class_embeds (`mindspore.Tensor` of shape `(batch_size, num_patches, hidden_size)`):
+        class_embeds (`ms.Tensor` of shape `(batch_size, num_patches, hidden_size)`):
             Class embeddings of all image patches. OWLv2 represents images as a set of image patches where the total
             number of patches is (image_size / patch_size)**2.
         text_model_output (Tuple[`BaseModelOutputWithPooling`]):
@@ -199,20 +211,22 @@ class Owlv2ObjectDetectionOutput(ModelOutput):
             The output of the [`Owlv2VisionModel`].
     """
 
-    loss: Optional[mindspore.Tensor] = None
+    loss: Optional[ms.Tensor] = None
     loss_dict: Optional[Dict] = None
-    logits: mindspore.Tensor = None
-    objectness_logits: mindspore.Tensor = None
-    pred_boxes: mindspore.Tensor = None
-    text_embeds: mindspore.Tensor = None
-    image_embeds: mindspore.Tensor = None
-    class_embeds: mindspore.Tensor = None
+    logits: ms.Tensor = None
+    objectness_logits: ms.Tensor = None
+    pred_boxes: ms.Tensor = None
+    text_embeds: ms.Tensor = None
+    image_embeds: ms.Tensor = None
+    class_embeds: ms.Tensor = None
     text_model_output: BaseModelOutputWithPooling = None
     vision_model_output: BaseModelOutputWithPooling = None
 
     def to_tuple(self) -> Tuple[Any]:
         return tuple(
-            self[k] if k not in ["text_model_output", "vision_model_output"] else getattr(self, k).to_tuple()
+            self[k]
+            if k not in ["text_model_output", "vision_model_output"]
+            else getattr(self, k).to_tuple()
             for k in self.keys()
         )
 
@@ -224,25 +238,25 @@ class Owlv2ImageGuidedObjectDetectionOutput(ModelOutput):
     Output type of [`Owlv2ForObjectDetection.image_guided_detection`].
 
     Args:
-        logits (`mindspore.Tensor` of shape `(batch_size, num_patches, num_queries)`):
+        logits (`ms.Tensor` of shape `(batch_size, num_patches, num_queries)`):
             Classification logits (including no-object) for all queries.
-        target_pred_boxes (`mindspore.Tensor` of shape `(batch_size, num_patches, 4)`):
+        target_pred_boxes (`ms.Tensor` of shape `(batch_size, num_patches, 4)`):
             Normalized boxes coordinates for all queries, represented as (center_x, center_y, width, height). These
             values are normalized in [0, 1], relative to the size of each individual target image in the batch
             (disregarding possible padding). You can use [`~Owlv2ImageProcessor.post_process_object_detection`] to
             retrieve the unnormalized bounding boxes.
-        query_pred_boxes (`mindspore.Tensor` of shape `(batch_size, num_patches, 4)`):
+        query_pred_boxes (`ms.Tensor` of shape `(batch_size, num_patches, 4)`):
             Normalized boxes coordinates for all queries, represented as (center_x, center_y, width, height). These
             values are normalized in [0, 1], relative to the size of each individual query image in the batch
             (disregarding possible padding). You can use [`~Owlv2ImageProcessor.post_process_object_detection`] to
             retrieve the unnormalized bounding boxes.
-        image_embeds (`mindspore.Tensor` of shape `(batch_size, patch_size, patch_size, output_dim`):
+        image_embeds (`ms.Tensor` of shape `(batch_size, patch_size, patch_size, output_dim`):
             Pooled output of [`Owlv2VisionModel`]. OWLv2 represents images as a set of image patches and computes
             image embeddings for each patch.
-        query_image_embeds (`mindspore.Tensor` of shape `(batch_size, patch_size, patch_size, output_dim`):
+        query_image_embeds (`ms.Tensor` of shape `(batch_size, patch_size, patch_size, output_dim`):
             Pooled output of [`Owlv2VisionModel`]. OWLv2 represents images as a set of image patches and computes
             image embeddings for each patch.
-        class_embeds (`mindspore.Tensor` of shape `(batch_size, num_patches, hidden_size)`):
+        class_embeds (`ms.Tensor` of shape `(batch_size, num_patches, hidden_size)`):
             Class embeddings of all image patches. OWLv2 represents images as a set of image patches where the total
             number of patches is (image_size / patch_size)**2.
         text_model_output (Tuple[`BaseModelOutputWithPooling`]):
@@ -251,18 +265,20 @@ class Owlv2ImageGuidedObjectDetectionOutput(ModelOutput):
             The output of the [`Owlv2VisionModel`].
     """
 
-    logits: mindspore.Tensor = None
-    image_embeds: mindspore.Tensor = None
-    query_image_embeds: mindspore.Tensor = None
-    target_pred_boxes: mindspore.Tensor = None
-    query_pred_boxes: mindspore.Tensor = None
-    class_embeds: mindspore.Tensor = None
+    logits: ms.Tensor = None
+    image_embeds: ms.Tensor = None
+    query_image_embeds: ms.Tensor = None
+    target_pred_boxes: ms.Tensor = None
+    query_pred_boxes: ms.Tensor = None
+    class_embeds: ms.Tensor = None
     text_model_output: BaseModelOutputWithPooling = None
     vision_model_output: BaseModelOutputWithPooling = None
 
     def to_tuple(self) -> Tuple[Any]:
         return tuple(
-            self[k] if k not in ["text_model_output", "vision_model_output"] else getattr(self, k).to_tuple()
+            self[k]
+            if k not in ["text_model_output", "vision_model_output"]
+            else getattr(self, k).to_tuple()
             for k in self.keys()
         )
 
@@ -273,7 +289,7 @@ class Owlv2VisionEmbeddings(nn.Cell):
         super().__init__()
         self.config = config
         self.embed_dim = config.hidden_size
-        self.class_embedding = mindspore.Parameter(ops.randn(config.hidden_size))
+        self.class_embedding = ms.Parameter(ops.randn(config.hidden_size))
 
         self.patch_embedding = nn.Conv2d(
             in_channels=config.num_channels,
@@ -281,21 +297,23 @@ class Owlv2VisionEmbeddings(nn.Cell):
             kernel_size=config.patch_size,
             stride=config.patch_size,
             has_bias=False,
-            pad_mode='pad',
-            padding=0
+            pad_mode="pad",
+            padding=0,
         )
 
         self.num_patches = (config.image_size // config.patch_size) ** 2
         self.num_positions = self.num_patches + 1
         self.position_embedding = nn.Embedding(self.num_positions, self.embed_dim)
-        self.register_buffer("position_ids", ops.arange(self.num_positions).broadcast_to((1, -1)))
+        self.position_ids = ops.arange(self.num_positions).broadcast_to((1, -1))
 
-    def construct(self, pixel_values: mindspore.Tensor) -> mindspore.Tensor:
+    def construct(self, pixel_values: ms.Tensor) -> ms.Tensor:
         batch_size = pixel_values.shape[0]
-        patch_embeds = self.patch_embedding(pixel_values)  # shape = [batch_size, num_channels, height, width]
+        patch_embeds = self.patch_embedding(
+            pixel_values
+        )  # shape = [batch_size, num_channels, height, width]
         patch_embeds = patch_embeds.flatten(start_dim=2).swapaxes(1, 2)
 
-        class_embeds = self.class_embedding.expand(batch_size, 1, -1)
+        class_embeds = self.class_embedding.broadcast_to((batch_size, 1, -1))
         embeddings = ops.cat([class_embeds, patch_embeds], axis=1)
         embeddings = embeddings + self.position_embedding(self.position_ids)
 
@@ -307,20 +325,24 @@ class Owlv2TextEmbeddings(nn.Cell):
     def __init__(self, config: Owlv2TextConfig):
         super().__init__()
         self.token_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.position_embedding = nn.Embedding(config.max_position_embeddings, config.hidden_size)
+        self.position_embedding = nn.Embedding(
+            config.max_position_embeddings, config.hidden_size
+        )
 
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
-        self.register_buffer(
-            "position_ids", ops.arange(config.max_position_embeddings).broadcast_to((1, -1))
+        self.position_ids = ops.arange(config.max_position_embeddings).broadcast_to(
+            (1, -1)
         )
 
     def construct(
         self,
-        input_ids: Optional[mindspore.Tensor] = None,
-        position_ids: Optional[mindspore.Tensor] = None,
-        inputs_embeds: Optional[mindspore.Tensor] = None,
-    ) -> mindspore.Tensor:
-        seq_length = input_ids.shape[-1] if input_ids is not None else inputs_embeds.shape[-2]
+        input_ids: Optional[ms.Tensor] = None,
+        position_ids: Optional[ms.Tensor] = None,
+        inputs_embeds: Optional[ms.Tensor] = None,
+    ) -> ms.Tensor:
+        seq_length = (
+            input_ids.shape[-1] if input_ids is not None else inputs_embeds.shape[-2]
+        )
 
         if position_ids is None:
             position_ids = self.position_ids[:, :seq_length]
@@ -357,16 +379,16 @@ class Owlv2Attention(nn.Cell):
         self.q_proj = nn.Dense(self.embed_dim, self.embed_dim)
         self.out_proj = nn.Dense(self.embed_dim, self.embed_dim)
 
-    def _shape(self, tensor: mindspore.Tensor, seq_len: int, bsz: int):
+    def _shape(self, tensor: ms.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).swapaxes(1, 2)
 
     def construct(
         self,
-        hidden_states: mindspore.Tensor,
-        attention_mask: Optional[mindspore.Tensor] = None,
-        causal_attention_mask: Optional[mindspore.Tensor] = None,
+        hidden_states: ms.Tensor,
+        attention_mask: Optional[ms.Tensor] = None,
+        causal_attention_mask: Optional[ms.Tensor] = None,
         output_attentions: Optional[bool] = False,
-    ) -> Tuple[mindspore.Tensor, Optional[mindspore.Tensor], Optional[Tuple[mindspore.Tensor]]]:
+    ) -> Tuple[ms.Tensor, Optional[ms.Tensor], Optional[Tuple[ms.Tensor]]]:
         """Input shape: Batch x Time x Channel"""
 
         bsz, tgt_len, embed_dim = hidden_states.shape
@@ -381,7 +403,7 @@ class Owlv2Attention(nn.Cell):
         key_states = key_states.view(*proj_shape)
         value_states = value_states.view(*proj_shape)
 
-        src_len = key_states.shape(1)
+        src_len = key_states.shape[1]
         attn_weights = ops.bmm(query_states, key_states.swapaxes(1, 2))
 
         if attn_weights.shape != (bsz * self.num_heads, tgt_len, src_len):
@@ -397,7 +419,10 @@ class Owlv2Attention(nn.Cell):
                     f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is"
                     f" {causal_attention_mask.shape}"
                 )
-            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + causal_attention_mask
+            attn_weights = (
+                attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
+                + causal_attention_mask
+            )
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
         if attention_mask is not None:
@@ -405,7 +430,10 @@ class Owlv2Attention(nn.Cell):
                 raise ValueError(
                     f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is {attention_mask.shape}"
                 )
-            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
+            attn_weights = (
+                attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
+                + attention_mask
+            )
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
         attn_weights = ops.softmax(attn_weights, axis=-1)
@@ -415,15 +443,19 @@ class Owlv2Attention(nn.Cell):
             # make sure that attn_weights keeps its gradient.
             # In order to do so, attn_weights have to reshaped
             # twice and have to be reused in the following
-            attn_weights_reshaped = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
-            attn_weights = attn_weights_reshaped.view(bsz * self.num_heads, tgt_len, src_len)
+            attn_weights_reshaped = attn_weights.view(
+                bsz, self.num_heads, tgt_len, src_len
+            )
+            attn_weights = attn_weights_reshaped.view(
+                bsz * self.num_heads, tgt_len, src_len
+            )
         else:
             attn_weights_reshaped = None
 
         attn_probs = ops.dropout(attn_weights, p=self.dropout, training=self.training)
 
         # For int8 compatibility, sometimes the `attn_probs` are in `fp32`
-        attn_probs = attn_probs.to(value_states.dtype)
+        attn_probs = attn_probs.astype(value_states.dtype)
 
         attn_output = ops.bmm(attn_probs, value_states)
 
@@ -451,7 +483,7 @@ class Owlv2MLP(nn.Cell):
         self.fc1 = nn.Dense(config.hidden_size, config.intermediate_size)
         self.fc2 = nn.Dense(config.intermediate_size, config.hidden_size)
 
-    def construct(self, hidden_states: mindspore.Tensor) -> mindspore.Tensor:
+    def construct(self, hidden_states: ms.Tensor) -> ms.Tensor:
         hidden_states = self.fc1(hidden_states)
         hidden_states = self.activation_fn(hidden_states)
         hidden_states = self.fc2(hidden_states)
@@ -470,15 +502,15 @@ class Owlv2EncoderLayer(nn.Cell):
 
     def construct(
         self,
-        hidden_states: mindspore.Tensor,
-        attention_mask: mindspore.Tensor,
-        causal_attention_mask: mindspore.Tensor,
+        hidden_states: ms.Tensor,
+        attention_mask: ms.Tensor,
+        causal_attention_mask: ms.Tensor,
         output_attentions: Optional[bool] = False,
-    ) -> Tuple[mindspore.Tensor]:
+    ) -> Tuple[ms.Tensor]:
         """
         Args:
-            hidden_states (`mindspore.Tensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`mindspore.Tensor`): attention mask of size
+            hidden_states (`ms.Tensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
+            attention_mask (`ms.Tensor`): attention mask of size
                 `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
                 `(config.encoder_attention_heads,)`.
             output_attentions (`bool`, *optional*):
@@ -521,161 +553,55 @@ class Owlv2PreTrainedModel(PreTrainedModel):
     supports_gradient_checkpointing = True
     _no_split_modules = ["Owlv2EncoderLayer"]
 
-    def _init_weights(self, module):
+    def _init_weights(self, cell):
         """Initialize the weights"""
         factor = self.config.initializer_factor
-        if isinstance(module, Owlv2TextEmbeddings):
-            module.token_embedding.weight.data.initialize(Normal(mean=0.0, sigma=factor * 0.02))
-            module.position_embedding.weight.data.initialize(
-                Normal(mean=0.0, sigma=factor * 0.02))
-        elif isinstance(module, Owlv2VisionEmbeddings):
+        if isinstance(cell, Owlv2TextEmbeddings):
+            cell.token_embedding.weight.data.initialize(Normal(factor * 0.02))
+            cell.position_embedding.weight.data.initialize(Normal(factor * 0.02))
+        elif isinstance(cell, Owlv2VisionEmbeddings):
             factor = self.config.initializer_factor
-            module.class_embedding.initialize(
-                Normal(module.embed_dim**-0.5 * factor))
-            module.patch_embedding.weight.data.initialize(
-                Normal(module.config.initializer_range * factor))
-            module.position_embedding.weight.data.initialize(
-                Normal(module.config.initializer_range * factor))
-        elif isinstance(module, Owlv2Attention):
+            cell.class_embedding.initialize(Normal(cell.embed_dim**-0.5 * factor))
+            cell.patch_embedding.weight.data.initialize(
+                Normal(cell.config.initializer_range * factor)
+            )
+            cell.position_embedding.weight.data.initialize(
+                Normal(cell.config.initializer_range * factor)
+            )
+        elif isinstance(cell, Owlv2Attention):
             factor = self.config.initializer_factor
-            in_proj_std = (module.embed_dim**-0.5) * ((2 * module.config.num_hidden_layers) ** -0.5) * factor
-            out_proj_std = (module.embed_dim**-0.5) * factor
-            module.q_proj.weight.data.initialize(Normal(in_proj_std))
-            module.k_proj.weight.data.initialize(Normal(in_proj_std))
-            module.v_proj.weight.data.initialize(Normal(in_proj_std))
-            module.out_proj.weight.data.initialize(Normal(out_proj_std))
-        elif isinstance(module, Owlv2MLP):
+            in_proj_std = (
+                (cell.embed_dim**-0.5)
+                * ((2 * cell.config.num_hidden_layers) ** -0.5)
+                * factor
+            )
+            out_proj_std = (cell.embed_dim**-0.5) * factor
+            cell.q_proj.weight.data.initialize(Normal(in_proj_std))
+            cell.k_proj.weight.data.initialize(Normal(in_proj_std))
+            cell.v_proj.weight.data.initialize(Normal(in_proj_std))
+            cell.out_proj.weight.data.initialize(Normal(out_proj_std))
+        elif isinstance(cell, Owlv2MLP):
             factor = self.config.initializer_factor
-            in_proj_std = (module.config.hidden_size**-0.5) * ((2 * module.config.num_hidden_layers) ** -0.5) * factor
-            fc_std = (2 * module.config.hidden_size) ** -0.5 * factor
-            module.fc1.weight.data.initialize(Normal(fc_std))
-            module.fc2.weight.data.initialize(Normal(in_proj_std))
-        elif isinstance(module, Owlv2Model):
-            module.text_projection.weight.data.initialize(
-                Normal(module.text_embed_dim**-0.5 * self.config.initializer_factor))
-            module.visual_projection.weight.data.initialize(
-                Normal(module.vision_embed_dim**-0.5 * self.config.initializer_factor))
-
-        if isinstance(module, nn.LayerNorm):
-            module.bias.initialize('zeros')
-            module.weight.data.fill(1.0)
-        if isinstance(module, nn.Dense) and module.bias is not None:
-            module.bias.initialize('zeros')
-
-
-OWLV2_START_DOCSTRING = r"""
-
-    This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
-    library implements for all its model (such as downloading or saving, resizing the input embeddings, pruning heads
-    etc.)
-
-    This model is also a PyTorch [torch.nn.Cell](https://pytorch.org/docs/stable/nn.html#torch.nn.Cell) subclass.
-    Use it as a regular PyTorch Module and refer to the PyTorch documentation for all matter related to general usage
-    and behavior.
-
-    Parameters:
-        config ([`Owvl2Config`]): Model configuration class with all the parameters of the model.
-            Initializing with a config file does not load the weights associated with the model, only the
-            configuration. Check out the [`~PreTrainedModel.from_pretrained`] method to load the model weights.
-"""
-
-OWLV2_TEXT_INPUTS_DOCSTRING = r"""
-    Args:
-        input_ids (`mindspore.Tensor` of shape `(batch_size * num_max_text_queries, sequence_length)`):
-            Indices of input sequence tokens in the vocabulary. Indices can be obtained using [`AutoTokenizer`]. See
-            [`PreTrainedTokenizer.encode`] and [`PreTrainedTokenizer.__call__`] for details. [What are input
-            IDs?](../glossary#input-ids)
-        attention_mask (`mindspore.Tensor` of shape `(batch_size, num_max_text_queries, sequence_length)`, *optional*):
-            Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-            [What are attention masks?](../glossary#attention-mask)
-        output_attentions (`bool`, *optional*):
-            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
-            tensors for more detail.
-        output_hidden_states (`bool`, *optional*):
-            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
-            more detail.
-        return_dict (`bool`, *optional*):
-            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-"""
-
-OWLV2_VISION_INPUTS_DOCSTRING = r"""
-    Args:
-        pixel_values (`mindspore.Tensor` of shape `(batch_size, num_channels, height, width)`):
-            Pixel values.
-        output_attentions (`bool`, *optional*):
-            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
-            tensors for more detail.
-        output_hidden_states (`bool`, *optional*):
-            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
-            more detail.
-        return_dict (`bool`, *optional*):
-            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-"""
-
-OWLV2_INPUTS_DOCSTRING = r"""
-    Args:
-        input_ids (`mindspore.Tensor` of shape `(batch_size, sequence_length)`):
-            Indices of input sequence tokens in the vocabulary. Indices can be obtained using [`AutoTokenizer`]. See
-            [`PreTrainedTokenizer.encode`] and [`PreTrainedTokenizer.__call__`] for details. [What are input
-            IDs?](../glossary#input-ids)
-        pixel_values (`mindspore.Tensor` of shape `(batch_size, num_channels, height, width)`):
-            Pixel values.
-        attention_mask (`mindspore.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-            [What are attention masks?](../glossary#attention-mask)
-        return_loss (`bool`, *optional*):
-            Whether or not to return the contrastive loss.
-        output_attentions (`bool`, *optional*):
-            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
-            tensors for more detail.
-        output_hidden_states (`bool`, *optional*):
-            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
-            more detail.
-        return_base_image_embeds (`bool`, *optional*):
-            Whether or not to return the base image embeddings.
-        return_dict (`bool`, *optional*):
-            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-"""
-
-OWLV2_OBJECT_DETECTION_INPUTS_DOCSTRING = r"""
-    Args:
-        pixel_values (`mindspore.Tensor` of shape `(batch_size, num_channels, height, width)`):
-            Pixel values.
-        input_ids (`mindspore.Tensor` of shape `(batch_size * num_max_text_queries, sequence_length)`, *optional*):
-            Indices of input sequence tokens in the vocabulary. Indices can be obtained using [`AutoTokenizer`]. See
-            [`PreTrainedTokenizer.encode`] and [`PreTrainedTokenizer.__call__`] for details. [What are input
-            IDs?](../glossary#input-ids).
-        attention_mask (`mindspore.Tensor` of shape `(batch_size, num_max_text_queries, sequence_length)`, *optional*):
-            Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-            - 1 for tokens that are **not masked**,
-            - 0 for tokens that are **masked**.
-            [What are attention masks?](../glossary#attention-mask)
-        output_hidden_states (`bool`, *optional*):
-            Whether or not to return the last hidden state. See `text_model_last_hidden_state` and
-            `vision_model_last_hidden_state` under returned tensors for more detail.
-        return_dict (`bool`, *optional*):
-            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-"""
-
-OWLV2_IMAGE_GUIDED_OBJECT_DETECTION_INPUTS_DOCSTRING = r"""
-    Args:
-        pixel_values (`mindspore.Tensor` of shape `(batch_size, num_channels, height, width)`):
-            Pixel values.
-        query_pixel_values (`mindspore.Tensor` of shape `(batch_size, num_channels, height, width)`):
-            Pixel values of query image(s) to be detected. Pass in one query image per target image.
-        output_attentions (`bool`, *optional*):
-            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
-            tensors for more detail.
-        output_hidden_states (`bool`, *optional*):
-            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
-            more detail.
-        return_dict (`bool`, *optional*):
-            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-"""
+            in_proj_std = (
+                (cell.config.hidden_size**-0.5)
+                * ((2 * cell.config.num_hidden_layers) ** -0.5)
+                * factor
+            )
+            fc_std = (2 * cell.config.hidden_size) ** -0.5 * factor
+            cell.fc1.weight.data.initialize(Normal(fc_std))
+            cell.fc2.weight.data.initialize(Normal(in_proj_std))
+        elif isinstance(cell, Owlv2Model):
+            cell.text_projection.weight.data.initialize(
+                Normal(cell.text_embed_dim**-0.5 * self.config.initializer_factor)
+            )
+            cell.visual_projection.weight.data.initialize(
+                Normal(cell.vision_embed_dim**-0.5 * self.config.initializer_factor)
+            )
+        if isinstance(cell, nn.LayerNorm):
+            cell.bias.initialize("zeros")
+            cell.weight.data.fill(1.0)
+        if isinstance(cell, nn.Dense) and cell.bias is not None:
+            cell.bias.initialize("zeros")
 
 
 # Copied from transformers.models.owlvit.modeling_owlvit.OwlViTEncoder with OwlViT->Owlv2
@@ -690,27 +616,29 @@ class Owlv2Encoder(nn.Cell):
 
     def __init__(self, config: Owlv2Config):
         super().__init__()
-        self.layers = nn.ModuleList([Owlv2EncoderLayer(config) for _ in range(config.num_hidden_layers)])
+        self.layers = nn.CellList(
+            [Owlv2EncoderLayer(config) for _ in range(config.num_hidden_layers)]
+        )
         self.gradient_checkpointing = False
 
     def construct(
         self,
         inputs_embeds,
-        attention_mask: Optional[mindspore.Tensor] = None,
-        causal_attention_mask: Optional[mindspore.Tensor] = None,
+        attention_mask: Optional[ms.Tensor] = None,
+        causal_attention_mask: Optional[ms.Tensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BaseModelOutput]:
         r"""
         Args:
-            inputs_embeds (`mindspore.Tensor` of shape `(batch_size, sequence_length, hidden_size)`).
-            attention_mask (`mindspore.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+            inputs_embeds (`ms.Tensor` of shape `(batch_size, sequence_length, hidden_size)`).
+            attention_mask (`ms.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
                 Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
                 - 1 for tokens that are **not masked**,
                 - 0 for tokens that are **masked**.
                 [What are attention masks?](../glossary#attention-mask)
-            causal_attention_mask (`mindspore.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+            causal_attention_mask (`ms.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
                 Causal mask for the text model. Mask values selected in `[0, 1]`:
                 - 1 for tokens that are **not masked**,
                 - 0 for tokens that are **masked**.
@@ -724,11 +652,19 @@ class Owlv2Encoder(nn.Cell):
             return_dict (`bool`, *optional*):
                 Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
         """
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         encoder_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
@@ -762,9 +698,15 @@ class Owlv2Encoder(nn.Cell):
             encoder_states = encoder_states + (hidden_states,)
 
         if not return_dict:
-            return tuple(v for v in [hidden_states, encoder_states, all_attentions] if v is not None)
+            return tuple(
+                v
+                for v in [hidden_states, encoder_states, all_attentions]
+                if v is not None
+            )
         return BaseModelOutput(
-            last_hidden_state=hidden_states, hidden_states=encoder_states, attentions=all_attentions
+            last_hidden_state=hidden_states,
+            hidden_states=encoder_states,
+            attentions=all_attentions,
         )
 
 
@@ -780,9 +722,9 @@ class Owlv2TextTransformer(nn.Cell):
 
     def construct(
         self,
-        input_ids: mindspore.Tensor,
-        attention_mask: Optional[mindspore.Tensor] = None,
-        position_ids: Optional[mindspore.Tensor] = None,
+        input_ids: ms.Tensor,
+        attention_mask: Optional[ms.Tensor] = None,
+        position_ids: Optional[ms.Tensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
@@ -790,11 +732,19 @@ class Owlv2TextTransformer(nn.Cell):
         r"""
         Returns:
         """
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         input_shape = input_ids.shape
         input_ids = input_ids.view(-1, input_shape[-1])
@@ -804,12 +754,15 @@ class Owlv2TextTransformer(nn.Cell):
         # OWLV2's text model uses causal mask, prepare it here.
         # https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
         causal_attention_mask = _create_4d_causal_attention_mask(
-            input_shape, hidden_states.dtype
+            input_shape,
+            hidden_states.dtype,
         )
         # expand attention_mask
         if attention_mask is not None:
             # [num_samples, seq_len] -> [num_samples, 1, tgt_seq_len, src_seq_len]
-            attention_mask = _prepare_4d_attention_mask(attention_mask, hidden_states.dtype)
+            attention_mask = _prepare_4d_attention_mask(
+                attention_mask, hidden_states.dtype
+            )
 
         encoder_outputs = self.encoder(
             inputs_embeds=hidden_states,
@@ -824,10 +777,12 @@ class Owlv2TextTransformer(nn.Cell):
         last_hidden_state = self.final_layer_norm(last_hidden_state)
 
         # take features from the end of tokens embedding (end of token is the highest number in each sequence)
-        # casting to torch.int for onnx compatibility: argmax doesn't support int64 inputs with opset 14
+        # casting to ms.int for onnx compatibility: argmax doesn't support int64 inputs with opset 14
         pooled_output = last_hidden_state[
-            ops.arange(last_hidden_state.shape[0]),
-            input_ids.astype(mindspore.int).argmax(axis=-1),
+            ops.arange(
+                last_hidden_state.shape[0],
+            ),
+            input_ids.astype(ms.int32).argmax(axis=-1),
         ]
 
         if not return_dict:
@@ -859,8 +814,8 @@ class Owlv2TextModel(Owlv2PreTrainedModel):
 
     def construct(
         self,
-        input_ids: mindspore.Tensor,
-        attention_mask: Optional[mindspore.Tensor] = None,
+        input_ids: ms.Tensor,
+        attention_mask: Optional[ms.Tensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
@@ -899,14 +854,17 @@ class Owlv2VisionTransformer(nn.Cell):
         self.config = config
 
         self.embeddings = Owlv2VisionEmbeddings(config)
-        self.pre_layernorm = nn.LayerNorm(config.hidden_size, epsilon=config.layer_norm_eps)
+        self.pre_layernorm = nn.LayerNorm(
+            config.hidden_size, epsilon=config.layer_norm_eps
+        )
         self.encoder = Owlv2Encoder(config)
-        self.post_layernorm = nn.LayerNorm(config.hidden_size, epsilon=config.layer_norm_eps)
-
+        self.post_layernorm = nn.LayerNorm(
+            config.hidden_size, epsilon=config.layer_norm_eps
+        )
 
     def construct(
         self,
-        pixel_values: mindspore.Tensor,
+        pixel_values: ms.Tensor,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
@@ -914,15 +872,23 @@ class Owlv2VisionTransformer(nn.Cell):
         r"""
         Returns:
         """
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         # Cast the input to the expected `dtype`
         expected_input_dtype = self.embeddings.patch_embedding.weight.dtype
-        pixel_values = pixel_values.to(expected_input_dtype)
+        pixel_values = pixel_values.astype(expected_input_dtype)
 
         hidden_states = self.embeddings(pixel_values)
         hidden_states = self.pre_layernorm(hidden_states)
@@ -966,7 +932,7 @@ class Owlv2VisionModel(Owlv2PreTrainedModel):
 
     def construct(
         self,
-        pixel_values: Optional[mindspore.Tensor] = None,
+        pixel_values: Optional[ms.Tensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
@@ -1028,24 +994,28 @@ class Owlv2Model(Owlv2PreTrainedModel):
         self.text_model = Owlv2TextTransformer(text_config)
         self.vision_model = Owlv2VisionTransformer(vision_config)
 
-        self.visual_projection = nn.Dense(self.vision_embed_dim, self.projection_dim, has_bias=False)
-        self.text_projection = nn.Dense(self.text_embed_dim, self.projection_dim, has_bias=False)
-        self.logit_scale = mindspore.Parameter(mindspore.Tensor(config.logit_scale_init_value))
+        self.visual_projection = nn.Dense(
+            self.vision_embed_dim, self.projection_dim, has_bias=False
+        )
+        self.text_projection = nn.Dense(
+            self.text_embed_dim, self.projection_dim, has_bias=False
+        )
+        self.logit_scale = ms.Parameter(ms.tensor(config.logit_scale_init_value))
 
         # Initialize weights and apply final processing
         self.post_init()
 
     def get_text_features(
         self,
-        input_ids: Optional[mindspore.Tensor] = None,
-        attention_mask: Optional[mindspore.Tensor] = None,
+        input_ids: Optional[ms.Tensor] = None,
+        attention_mask: Optional[ms.Tensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> mindspore.Tensor:
+    ) -> ms.Tensor:
         r"""
         Returns:
-            text_features (`mindspore.Tensor` of shape `(batch_size, output_dim`): The text embeddings obtained by
+            text_features (`ms.Tensor` of shape `(batch_size, output_dim`): The text embeddings obtained by
             applying the projection layer to the pooled output of [`Owlv2TextModel`].
 
         Examples:
@@ -1060,10 +1030,14 @@ class Owlv2Model(Owlv2PreTrainedModel):
         >>> text_features = model.get_text_features(**inputs)
         ```"""
         # Use OWLv2 model's config for some fields (if specified) instead of those of vision & text components.
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         # Get embeddings for all text queries in all batch samples
-        text_output = self.text_model(input_ids=input_ids, attention_mask=attention_mask, return_dict=return_dict)
+        text_output = self.text_model(
+            input_ids=input_ids, attention_mask=attention_mask, return_dict=return_dict
+        )
         pooled_output = text_output[1]
         text_features = self.text_projection(pooled_output)
 
@@ -1071,14 +1045,14 @@ class Owlv2Model(Owlv2PreTrainedModel):
 
     def get_image_features(
         self,
-        pixel_values: Optional[mindspore.Tensor] = None,
+        pixel_values: Optional[ms.Tensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> mindspore.Tensor:
+    ) -> ms.Tensor:
         r"""
         Returns:
-            image_features (`mindspore.Tensor` of shape `(batch_size, output_dim`): The image embeddings obtained by
+            image_features (`ms.Tensor` of shape `(batch_size, output_dim`): The image embeddings obtained by
             applying the projection layer to the pooled output of [`Owlv2VisionModel`].
 
         Examples:
@@ -1095,11 +1069,19 @@ class Owlv2Model(Owlv2PreTrainedModel):
         >>> image_features = model.get_image_features(**inputs)
         ```"""
         # Use OWLv2 model's config for some fields (if specified) instead of those of vision & text components.
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         vision_outputs = self.vision_model(
             pixel_values=pixel_values,
@@ -1115,9 +1097,9 @@ class Owlv2Model(Owlv2PreTrainedModel):
 
     def construct(
         self,
-        input_ids: Optional[mindspore.Tensor] = None,
-        pixel_values: Optional[mindspore.Tensor] = None,
-        attention_mask: Optional[mindspore.Tensor] = None,
+        input_ids: Optional[ms.Tensor] = None,
+        pixel_values: Optional[ms.Tensor] = None,
+        attention_mask: Optional[ms.Tensor] = None,
         return_loss: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
@@ -1143,11 +1125,19 @@ class Owlv2Model(Owlv2PreTrainedModel):
         >>> probs = logits_per_image.softmax(dim=1)  # we can take the softmax to get the label probabilities
         ```"""
         # Use OWLv2 model's config for some fields (if specified) instead of those of vision & text components.
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         vision_outputs = self.vision_model(
             pixel_values=pixel_values,
@@ -1171,8 +1161,12 @@ class Owlv2Model(Owlv2PreTrainedModel):
         image_embeds = self.visual_projection(image_embeds)
 
         # normalized features
-        image_embeds = image_embeds / ops.norm(image_embeds, ord=2, dim=-1, keepdim=True)
-        text_embeds_norm = text_embeds / ops.norm(text_embeds, ord=2, dim=-1, keepdim=True)
+        image_embeds = image_embeds / ops.norm(
+            image_embeds, ord=2, dim=-1, keepdim=True
+        )
+        text_embeds_norm = text_embeds / ops.norm(
+            text_embeds, ord=2, dim=-1, keepdim=True
+        )
 
         # cosine similarity as logits and set it on the correct device
         logit_scale = self.logit_scale.exp()
@@ -1187,7 +1181,14 @@ class Owlv2Model(Owlv2PreTrainedModel):
         text_embeds = text_embeds_norm
 
         if not return_dict:
-            output = (logits_per_image, logits_per_text, text_embeds, image_embeds, text_outputs, vision_outputs)
+            output = (
+                logits_per_image,
+                logits_per_text,
+                text_embeds,
+                image_embeds,
+                text_outputs,
+                vision_outputs,
+            )
             return ((loss,) + output) if loss is not None else output
 
         return Owlv2Output(
@@ -1212,7 +1213,7 @@ class Owlv2BoxPredictionHead(nn.Cell):
         self.gelu = nn.GELU()
         self.dense2 = nn.Dense(width, out_dim)
 
-    def construct(self, image_features: mindspore.Tensor) -> mindspore.Tensor:
+    def construct(self, image_features: ms.Tensor) -> ms.Tensor:
         output = self.dense0(image_features)
         output = self.gelu(output)
         output = self.dense1(output)
@@ -1236,10 +1237,10 @@ class Owlv2ClassPredictionHead(nn.Cell):
 
     def construct(
         self,
-        image_embeds: mindspore.Tensor,
-        query_embeds: Optional[mindspore.Tensor],
-        query_mask: Optional[mindspore.Tensor],
-    ) -> Tuple[mindspore.Tensor]:
+        image_embeds: ms.Tensor,
+        query_embeds: Optional[ms.Tensor],
+        query_mask: Optional[ms.Tensor],
+    ) -> Tuple[ms.Tensor]:
         image_class_embeds = self.dense0(image_embeds)
         if query_embeds is None:
             batch_size, num_patches = image_class_embeds.shape[:2]
@@ -1247,8 +1248,12 @@ class Owlv2ClassPredictionHead(nn.Cell):
             return (pred_logits, image_class_embeds)
 
         # Normalize image and text features
-        image_class_embeds = image_class_embeds / (ops.norm(image_class_embeds, dim=-1, keepdim=True) + 1e-6)
-        query_embeds = query_embeds / (ops.norm(query_embeds, dim=-1, keepdim=True) + 1e-6)
+        image_class_embeds = image_class_embeds / (
+            ops.norm(image_class_embeds, dim=-1, keepdim=True) + 1e-6
+        )
+        query_embeds = query_embeds / (
+            ops.norm(query_embeds, dim=-1, keepdim=True) + 1e-6
+        )
 
         # Get class predictions
         pred_logits = ops.einsum("...pd,...qd->...pq", image_class_embeds, query_embeds)
@@ -1264,7 +1269,7 @@ class Owlv2ClassPredictionHead(nn.Cell):
                 query_mask = ops.unsqueeze(query_mask, dim=-2)
 
             pred_logits = ops.where(query_mask == 0, -1e6, pred_logits)
-            pred_logits = pred_logits.astype(mindspore.float32)
+            pred_logits = pred_logits.astype(ms.float32)
 
         return (pred_logits, image_class_embeds)
 
@@ -1280,18 +1285,23 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
         self.box_head = Owlv2BoxPredictionHead(config)
         self.objectness_head = Owlv2BoxPredictionHead(config, out_dim=1)
 
-        self.layer_norm = nn.LayerNorm(config.vision_config.hidden_size, epsilon=config.vision_config.layer_norm_eps)
+        self.layer_norm = nn.LayerNorm(
+            config.vision_config.hidden_size,
+            epsilon=config.vision_config.layer_norm_eps,
+        )
         self.sigmoid = nn.Sigmoid()
 
-        self.sqrt_num_patches = config.vision_config.image_size // config.vision_config.patch_size
+        self.sqrt_num_patches = (
+            config.vision_config.image_size // config.vision_config.patch_size
+        )
         self.box_bias = self.compute_box_bias(self.sqrt_num_patches)
 
     @staticmethod
     # Copied from transformers.models.owlvit.modeling_owlvit.OwlViTForObjectDetection.normalize_grid_corner_coordinates
-    def normalize_grid_corner_coordinates(num_patches: int) -> mindspore.Tensor:
+    def normalize_grid_corner_coordinates(num_patches: int) -> ms.Tensor:
         # Create grid coordinates using torch
-        x_coordinates = ops.arange(1, num_patches + 1, dtype=mindspore.float32)
-        y_coordinates = ops.arange(1, num_patches + 1, dtype=mindspore.float32)
+        x_coordinates = ops.arange(1, num_patches + 1, dtype=ms.float32)
+        y_coordinates = ops.arange(1, num_patches + 1, dtype=ms.float32)
         xx, yy = ops.meshgrid(x_coordinates, y_coordinates, indexing="xy")
 
         # Stack the coordinates and divide by num_patches
@@ -1303,31 +1313,37 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
 
         return box_coordinates
 
-    def objectness_predictor(self, image_features: mindspore.Tensor) -> mindspore.Tensor:
+    def objectness_predictor(self, image_features: ms.Tensor) -> ms.Tensor:
         """Predicts the probability that each image feature token is an object.
 
         Args:
-            image_features (`mindspore.Tensor` of shape `(batch_size, num_patches, hidden_dim)`)):
+            image_features (`ms.Tensor` of shape `(batch_size, num_patches, hidden_dim)`)):
                 Features extracted from the image.
         Returns:
             Objectness scores.
         """
-        image_features = image_features
+        # image_features = image_features.detach()
         objectness_logits = self.objectness_head(image_features)
         objectness_logits = objectness_logits[..., 0]
         return objectness_logits
 
     @lru_cache(maxsize=2)
     # Copied from transformers.models.owlvit.modeling_owlvit.OwlViTForObjectDetection.compute_box_bias
-    def compute_box_bias(self, num_patches: int, feature_map: Optional[mindspore.Tensor] = None) -> mindspore.Tensor:
+    def compute_box_bias(
+        self, num_patches: int, feature_map: Optional[ms.Tensor] = None
+    ) -> ms.Tensor:
         if feature_map is not None:
-            raise ValueError("feature_map has been deprecated as an input. Please pass in num_patches instead")
+            raise ValueError(
+                "feature_map has been deprecated as an input. Please pass in num_patches instead"
+            )
         # The box center is biased to its position on the feature grid
         box_coordinates = self.normalize_grid_corner_coordinates(num_patches)
         box_coordinates = ops.clip(box_coordinates, 0.0, 1.0)
 
         # Unnormalize xy
-        box_coord_bias = ops.log(box_coordinates + 1e-4) - ops.log1p(-box_coordinates + 1e-4)
+        box_coord_bias = ops.log(box_coordinates + 1e-4) - ops.log1p(
+            -box_coordinates + 1e-4
+        )
 
         # The box size is biased to the patch size
         box_size = ops.full_like(box_coord_bias, 1.0 / num_patches)
@@ -1340,9 +1356,9 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
     # Copied from transformers.models.owlvit.modeling_owlvit.OwlViTForObjectDetection.box_predictor
     def box_predictor(
         self,
-        image_feats: mindspore.Tensor,
-        feature_map: mindspore.Tensor,
-    ) -> mindspore.Tensor:
+        image_feats: ms.Tensor,
+        feature_map: ms.Tensor,
+    ) -> ms.Tensor:
         """
         Args:
             image_feats:
@@ -1365,10 +1381,10 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
     # Copied from transformers.models.owlvit.modeling_owlvit.OwlViTForObjectDetection.class_predictor
     def class_predictor(
         self,
-        image_feats: mindspore.Tensor,
-        query_embeds: Optional[mindspore.Tensor] = None,
-        query_mask: Optional[mindspore.Tensor] = None,
-    ) -> Tuple[mindspore.Tensor]:
+        image_feats: ms.Tensor,
+        query_embeds: Optional[ms.Tensor] = None,
+        query_mask: Optional[ms.Tensor] = None,
+    ) -> Tuple[ms.Tensor]:
         """
         Args:
             image_feats:
@@ -1378,19 +1394,21 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
             query_mask:
                 Must be provided with query_embeddings. A mask indicating which query embeddings are valid.
         """
-        (pred_logits, image_class_embeds) = self.class_head(image_feats, query_embeds, query_mask)
+        (pred_logits, image_class_embeds) = self.class_head(
+            image_feats, query_embeds, query_mask
+        )
 
         return (pred_logits, image_class_embeds)
 
     # Copied from transformers.models.owlvit.modeling_owlvit.OwlViTForObjectDetection.image_text_embedder with owlvit->owlv2
     def image_text_embedder(
         self,
-        input_ids: mindspore.Tensor,
-        pixel_values: mindspore.Tensor,
-        attention_mask: mindspore.Tensor,
+        input_ids: ms.Tensor,
+        pixel_values: ms.Tensor,
+        attention_mask: ms.Tensor,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-    ) -> Tuple[mindspore.Tensor]:
+    ) -> Tuple[ms.Tensor]:
         # Encode text and image
         outputs = self.owlv2(
             pixel_values=pixel_values,
@@ -1406,7 +1424,9 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
         image_embeds = self.owlv2.vision_model.post_layernorm(last_hidden_state)
 
         # Resize class token
-        class_token_out = ops.broadcast_to(image_embeds[:, :1, :], image_embeds[:, :-1].shape)
+        class_token_out = ops.broadcast_to(
+            image_embeds[:, :1, :], image_embeds[:, :-1].shape
+        )
 
         # Merge image embedding with class tokens
         image_embeds = image_embeds[:, 1:, :] * class_token_out
@@ -1427,19 +1447,23 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
     # Copied from transformers.models.owlvit.modeling_owlvit.OwlViTForObjectDetection.image_embedder with owlvit->owlv2, OwlViTModel->Owlv2Model
     def image_embedder(
         self,
-        pixel_values: mindspore.Tensor,
+        pixel_values: ms.Tensor,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-    ) -> Tuple[mindspore.Tensor]:
+    ) -> Tuple[ms.Tensor]:
         # Get Owlv2Model vision embeddings (same as CLIP)
-        vision_outputs = self.owlv2.vision_model(pixel_values=pixel_values, return_dict=True)
+        vision_outputs = self.owlv2.vision_model(
+            pixel_values=pixel_values, return_dict=True
+        )
 
         # Apply post_layernorm to last_hidden_state, return non-projected output
         last_hidden_state = vision_outputs[0]
         image_embeds = self.owlv2.vision_model.post_layernorm(last_hidden_state)
 
         # Resize class token
-        class_token_out = ops.broadcast_to(image_embeds[:, :1, :], image_embeds[:, :-1].shape)
+        class_token_out = ops.broadcast_to(
+            image_embeds[:, :1, :], image_embeds[:, :-1].shape
+        )
 
         # Merge image embedding with class tokens
         image_embeds = image_embeds[:, 1:, :] * class_token_out
@@ -1458,8 +1482,10 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
 
     # Copied from transformers.models.owlvit.modeling_owlvit.OwlViTForObjectDetection.embed_image_query
     def embed_image_query(
-        self, query_image_features: mindspore.Tensor, query_feature_map: mindspore.Tensor
-    ) -> mindspore.Tensor:
+        self,
+        query_image_features: ms.Tensor,
+        query_feature_map: ms.Tensor,
+    ) -> ms.Tensor:
         _, class_embeds = self.class_predictor(query_image_features)
         pred_boxes = self.box_predictor(query_image_features, query_feature_map)
         pred_boxes_as_corners = center_to_corners_format(pred_boxes)
@@ -1469,7 +1495,9 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
         best_box_indices = []
 
         for i in range(query_image_features.shape[0]):
-            each_query_box = mindspore.Tensor([[0, 0, 1, 1]])
+            each_query_box = ms.tensor(
+                [[0, 0, 1, 1]],
+            )
             each_query_pred_boxes = pred_boxes_as_corners[i]
             ious, _ = box_iou(each_query_box, each_query_pred_boxes)
 
@@ -1478,7 +1506,7 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
                 ious = generalized_box_iou(each_query_box, each_query_pred_boxes)
 
             # Use an adaptive threshold to include all boxes within 80% of the best IoU
-            iou_threshold = ops.max(ious) * 0.8
+            iou_threshold = ops.max(ious)[0] * 0.8
 
             selected_inds = (ious[0] >= iou_threshold).nonzero()
             if selected_inds.numel():
@@ -1499,8 +1527,8 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
 
     def image_guided_detection(
         self,
-        pixel_values: mindspore.Tensor,
-        query_pixel_values: Optional[mindspore.Tensor] = None,
+        pixel_values: ms.Tensor,
+        query_pixel_values: Optional[ms.Tensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
@@ -1524,11 +1552,11 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
         >>> query_image = Image.open(requests.get(query_url, stream=True).raw)
         >>> inputs = processor(images=image, query_images=query_image, return_tensors="pt")
 
-        >>> # construct pass
-        >>> with torch.no_grad():
+        >>> # forward pass
+        >>> with ms.no_grad():
         ...     outputs = model.image_guided_detection(**inputs)
 
-        >>> target_sizes = mindspore.Tensor([image.size[::-1]])
+        >>> target_sizes = ms.Tensor([image.size[::-1]])
 
         >>> # Convert outputs (bounding boxes and class logits) to Pascal VOC format (xmin, ymin, xmax, ymax)
         >>> results = processor.post_process_image_guided_detection(
@@ -1553,11 +1581,19 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
         Detected similar object with confidence 0.966 at location [31.44, 463.65, 654.66, 471.07]
         Detected similar object with confidence 0.924 at location [30.93, 468.07, 635.35, 475.39]
         ```"""
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
         )
-        return_dict = return_dict if return_dict is not None else self.config.return_dict
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        return_dict = (
+            return_dict if return_dict is not None else self.config.return_dict
+        )
 
         # Compute feature maps for the input and query images
         query_feature_map = self.image_embedder(pixel_values=query_pixel_values)[0]
@@ -1567,16 +1603,24 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
             output_hidden_states=output_hidden_states,
         )
 
-        batch_size, num_patches, num_patches, hidden_dim = feature_map.shape
-        image_feats = ops.reshape(feature_map, (batch_size, num_patches * num_patches, hidden_dim))
+        batch_size, _, num_patches, hidden_dim = feature_map.shape
+        image_feats = ops.reshape(
+            feature_map, (batch_size, num_patches * num_patches, hidden_dim)
+        )
 
-        batch_size, num_patches, num_patches, hidden_dim = query_feature_map.shape
-        query_image_feats = ops.reshape(query_feature_map, (batch_size, num_patches * num_patches, hidden_dim))
+        batch_size, _, num_patches, hidden_dim = query_feature_map.shape
+        query_image_feats = ops.reshape(
+            query_feature_map, (batch_size, num_patches * num_patches, hidden_dim)
+        )
         # Get top class embedding and best box index for each query image in batch
-        query_embeds, best_box_indices, query_pred_boxes = self.embed_image_query(query_image_feats, query_feature_map)
+        query_embeds, best_box_indices, query_pred_boxes = self.embed_image_query(
+            query_image_feats, query_feature_map
+        )
 
         # Predict object classes [batch_size, num_patches, num_queries+1]
-        (pred_logits, class_embeds) = self.class_predictor(image_feats=image_feats, query_embeds=query_embeds)
+        (pred_logits, class_embeds) = self.class_predictor(
+            image_feats=image_feats, query_embeds=query_embeds
+        )
 
         # Predict object boxes
         target_pred_boxes = self.box_predictor(image_feats, feature_map)
@@ -1607,9 +1651,9 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
 
     def construct(
         self,
-        input_ids: mindspore.Tensor,
-        pixel_values: mindspore.Tensor,
-        attention_mask: Optional[mindspore.Tensor] = None,
+        input_ids: ms.Tensor,
+        pixel_values: ms.Tensor,
+        attention_mask: Optional[ms.Tensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
@@ -1632,11 +1676,11 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
         >>> texts = [["a photo of a cat", "a photo of a dog"]]
         >>> inputs = processor(text=texts, images=image, return_tensors="pt")
 
-        >>> # construct pass
-        >>> with torch.no_grad():
+        >>> # forward pass
+        >>> with ms.no_grad():
         ...     outputs = model(**inputs)
 
-        >>> target_sizes = mindspore.Tensor([image.size[::-1]])
+        >>> target_sizes = ms.Tensor([image.size[::-1]])
         >>> # Convert outputs (bounding boxes and class logits) to final bounding boxes and scores
         >>> results = processor.post_process_object_detection(
         ...     outputs=outputs, threshold=0.2, target_sizes=target_sizes
@@ -1652,11 +1696,19 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
         Detected a photo of a cat with confidence 0.614 at location [341.67, 23.39, 642.32, 371.35]
         Detected a photo of a cat with confidence 0.665 at location [6.75, 51.96, 326.62, 473.13]
         ```"""
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
         )
-        return_dict = return_dict if return_dict is not None else self.config.return_dict
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        return_dict = (
+            return_dict if return_dict is not None else self.config.return_dict
+        )
 
         # Embed images and text queries
         query_embeds, feature_map, outputs = self.image_text_embedder(
@@ -1671,19 +1723,25 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
         text_outputs = outputs.text_model_output
         vision_outputs = outputs.vision_model_output
 
-        batch_size, num_patches, num_patches, hidden_dim = feature_map.shape
-        image_feats = ops.reshape(feature_map, (batch_size, num_patches * num_patches, hidden_dim))
+        batch_size, _, num_patches, hidden_dim = feature_map.shape
+        image_feats = ops.reshape(
+            feature_map, (batch_size, num_patches * num_patches, hidden_dim)
+        )
 
         # Reshape from [batch_size * max_text_queries, hidden_dim] -> [batch_size, max_text_queries, hidden_dim]
         max_text_queries = input_ids.shape[0] // batch_size
-        query_embeds = query_embeds.reshape(batch_size, max_text_queries, query_embeds.shape[-1])
+        query_embeds = query_embeds.reshape(
+            batch_size, max_text_queries, query_embeds.shape[-1]
+        )
 
         # If first token is 0, then this is a padded query [batch_size, num_queries].
         input_ids = input_ids.reshape(batch_size, max_text_queries, input_ids.shape[-1])
         query_mask = input_ids[..., 0] > 0
 
         # Predict object classes [batch_size, num_patches, num_queries+1]
-        (pred_logits, class_embeds) = self.class_predictor(image_feats, query_embeds, query_mask)
+        (pred_logits, class_embeds) = self.class_predictor(
+            image_feats, query_embeds, query_mask
+        )
 
         # Predict objectness
         objectness_logits = self.objectness_predictor(image_feats)
@@ -1716,9 +1774,11 @@ class Owlv2ForObjectDetection(Owlv2PreTrainedModel):
             vision_model_output=vision_outputs,
         )
 
+
 __all__ = [
-    "OwlV2ForObjectDetection",
-    "OwlV2Model",
-    "OwlV2TextModel",
-    "OwlV2VisionModel",
+    "Owlv2Model",
+    "Owlv2PreTrainedModel",
+    "Owlv2TextModel",
+    "Owlv2VisionModel",
+    "Owlv2ForObjectDetection",
 ]

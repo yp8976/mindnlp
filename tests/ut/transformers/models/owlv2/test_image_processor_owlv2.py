@@ -15,17 +15,24 @@
 
 
 import unittest
-import numpy
-from mindnlp.utils.testing_utils import require_mindspore, require_vision, slow
-from mindnlp.utils import is_vision_available, is_mindspore_available
 
-from ...test_image_processing_common import ImageProcessingTestMixin, prepare_image_inputs
+from mindnlp.utils.testing_utils import require_mindspore, require_vision, slow
+from mindnlp.utils import is_mindspore_available, is_vision_available
+import numpy as np
+from ...test_image_processing_common import (
+    ImageProcessingTestMixin,
+    prepare_image_inputs,
+)
 
 
 if is_vision_available():
     from PIL import Image
 
-    from transformers import AutoProcessor, Owlv2ForObjectDetection, Owlv2ImageProcessor
+    from mindnlp.transformers import (
+        AutoProcessor,
+        Owlv2ForObjectDetection,
+        Owlv2ImageProcessor,
+    )
 
 if is_mindspore_available():
     import mindspore
@@ -72,7 +79,9 @@ class Owlv2ImageProcessingTester(unittest.TestCase):
     def expected_output_image_shape(self, images):
         return self.num_channels, self.size["height"], self.size["width"]
 
-    def prepare_image_inputs(self, equal_resolution=False, numpify=False, torchify=False):
+    def prepare_image_inputs(
+        self, equal_resolution=False, numpify=False, torchify=False
+    ):
         return prepare_image_inputs(
             batch_size=self.batch_size,
             num_channels=self.num_channels,
@@ -87,7 +96,7 @@ class Owlv2ImageProcessingTester(unittest.TestCase):
 @require_mindspore
 @require_vision
 class Owlv2ImageProcessingTest(ImageProcessingTestMixin, unittest.TestCase):
-    image_processing_class = Owlv2ImageProcessor
+    image_processing_class = Owlv2ImageProcessor if is_vision_available() else None
 
     def setUp(self):
         self.image_processor_tester = Owlv2ImageProcessingTester(self)
@@ -105,7 +114,9 @@ class Owlv2ImageProcessingTest(ImageProcessingTestMixin, unittest.TestCase):
         self.assertTrue(hasattr(image_processing, "image_std"))
 
     def test_image_processor_from_dict_with_kwargs(self):
-        image_processor = self.image_processing_class.from_dict(self.image_processor_dict)
+        image_processor = self.image_processing_class.from_dict(
+            self.image_processor_dict
+        )
         self.assertEqual(image_processor.size, {"height": 18, "width": 18})
 
         image_processor = self.image_processing_class.from_dict(
@@ -118,7 +129,7 @@ class Owlv2ImageProcessingTest(ImageProcessingTestMixin, unittest.TestCase):
         processor = Owlv2ImageProcessor()
 
         image = Image.open("./tests/fixtures/tests_samples/COCO/000000039769.png")
-        pixel_values = processor(image, return_tensors="pt").pixel_values
+        pixel_values = processor(image, return_tensors="ms").pixel_values
 
         mean_value = round(pixel_values.mean().item(), 4)
         self.assertEqual(mean_value, 0.2353)
@@ -134,8 +145,18 @@ class Owlv2ImageProcessingTest(ImageProcessingTestMixin, unittest.TestCase):
         target_size = image.size[::-1]
         expected_boxes = mindspore.tensor(
             [
-                [341.66656494140625, 23.38756561279297, 642.321044921875, 371.3482971191406],
-                [6.753320693969727, 51.96149826049805, 326.61810302734375, 473.12982177734375],
+                [
+                    341.66656494140625,
+                    23.38756561279297,
+                    642.321044921875,
+                    371.3482971191406,
+                ],
+                [
+                    6.753320693969727,
+                    51.96149826049805,
+                    326.61810302734375,
+                    473.12982177734375,
+                ],
             ]
         )
 
@@ -143,16 +164,20 @@ class Owlv2ImageProcessingTest(ImageProcessingTestMixin, unittest.TestCase):
         inputs = processor(text=[text], images=[image], return_tensors="ms")
         outputs = model(**inputs)
 
-        results = processor.post_process_object_detection(outputs, threshold=0.2, target_sizes=[target_size])[0]
+        results = processor.post_process_object_detection(
+            outputs, threshold=0.2, target_sizes=[target_size]
+        )[0]
 
         boxes = results["boxes"]
         self.assertTrue(
-            numpy.allclose(boxes.asnumpy(), expected_boxes.asnumpy(), atol=1e-2),
+            np.allclose(boxes.asnumpy(), expected_boxes.asnumpy(), atol=1e-2),
             f"Single image bounding boxes fail. Expected {expected_boxes}, got {boxes}",
         )
 
         # batch of images
-        inputs = processor(text=[text, text], images=[image, image], return_tensors="ms")
+        inputs = processor(
+            text=[text, text], images=[image, image], return_tensors="ms"
+        )
         outputs = model(**inputs)
         results = processor.post_process_object_detection(
             outputs, threshold=0.2, target_sizes=[target_size, target_size]
@@ -161,10 +186,12 @@ class Owlv2ImageProcessingTest(ImageProcessingTestMixin, unittest.TestCase):
         for result in results:
             boxes = result["boxes"]
             self.assertTrue(
-                numpy.allclose(boxes.asnumpy(), expected_boxes.asnumpy(), atol=1e-2),
+                np.allclose(boxes.asnumpy(), expected_boxes.asnumpy(), atol=1e-2),
                 f"Batch image bounding boxes fail. Expected {expected_boxes}, got {boxes}",
             )
 
-    @unittest.skip("OWLv2 doesn't treat 4 channel PIL and numpy consistently yet")  # FIXME Amy
+    @unittest.skip(
+        "OWLv2 doesn't treat 4 channel PIL and numpy consistently yet"
+    )  # FIXME Amy
     def test_call_numpy_4_channels(self):
         pass

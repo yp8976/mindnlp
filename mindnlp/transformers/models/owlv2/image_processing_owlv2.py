@@ -18,6 +18,7 @@ import warnings
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
+
 from mindnlp.configs import OPENAI_CLIP_MEAN, OPENAI_CLIP_STD
 from ...image_processing_utils import BaseImageProcessor, BatchFeature
 from ...image_transforms import (
@@ -38,7 +39,7 @@ from ...image_utils import (
     validate_kwargs,
     validate_preprocess_arguments,
 )
-from mindnlp.utils import (
+from ....utils import (
     TensorType,
     is_scipy_available,
     is_mindspore_available,
@@ -49,7 +50,7 @@ from mindnlp.utils import (
 
 
 if is_mindspore_available():
-    import mindspore
+    import mindspore as ms
     from mindspore import ops
 
 
@@ -67,9 +68,9 @@ logger = logging.get_logger(__name__)
 def _upcast(t):
     # Protects from numerical overflows in multiplications by upcasting to the equivalent higher type
     if t.is_floating_point():
-        return t if t.dtype in (mindspore.float32, mindspore.float64) else t.astype(mindspore.float32)
+        return t if t.dtype in (ms.float32, ms.float64) else t.float()
     else:
-        return t if t.dtype in (mindspore.int32, mindspore.int64) else t.astype(mindspore.int32)
+        return t if t.dtype in (ms.int32, ms.int64) else t.int()
 
 
 # Copied from transformers.models.owlvit.image_processing_owlvit.box_area
@@ -78,11 +79,11 @@ def box_area(boxes):
     Computes the area of a set of bounding boxes, which are specified by its (x1, y1, x2, y2) coordinates.
 
     Args:
-        boxes (`torch.FloatTensor` of shape `(number_of_boxes, 4)`):
+        boxes (`ms.FloatTensor` of shape `(number_of_boxes, 4)`):
             Boxes for which the area will be computed. They are expected to be in (x1, y1, x2, y2) format with `0 <= x1
             < x2` and `0 <= y1 < y2`.
     Returns:
-        `torch.FloatTensor`: a tensor containing the area for each box.
+        `ms.FloatTensor`: a tensor containing the area for each box.
     """
     boxes = _upcast(boxes)
     return (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
@@ -110,7 +111,7 @@ def _preprocess_resize_output_shape(image, output_shape):
 
     Args:
         image (`np.ndarray`):
-         Image to be resized.
+        Image to be resized.
         output_shape (`iterable`):
             Size of the generated output image `(rows, cols[, ...][, dim])`. If `dim` is not provided, the number of
             channels is preserved.
@@ -139,7 +140,10 @@ def _preprocess_resize_output_shape(image, output_shape):
         # multichannel case: append shape of last axis
         output_shape = output_shape + (image.shape[-1],)
     elif output_ndim < image.ndim:
-        raise ValueError("output_shape length cannot be smaller than the " "image number of dimensions")
+        raise ValueError(
+            "output_shape length cannot be smaller than the "
+            "image number of dimensions"
+        )
 
     return image, output_shape
 
@@ -215,7 +219,7 @@ class Owlv2ImageProcessor(BaseImageProcessor):
         do_pad: bool = True,
         do_resize: bool = True,
         size: Dict[str, int] = None,
-        resample: PILImageResampling = PILImageResampling.BILINEAR,
+        resample=PILImageResampling.BILINEAR,
         do_normalize: bool = True,
         image_mean: Optional[Union[float, List[float]]] = None,
         image_std: Optional[Union[float, List[float]]] = None,
@@ -323,25 +327,44 @@ class Owlv2ImageProcessor(BaseImageProcessor):
             if anti_aliasing_sigma is None:
                 anti_aliasing_sigma = np.maximum(0, (factors - 1) / 2)
             else:
-                anti_aliasing_sigma = np.atleast_1d(anti_aliasing_sigma) * np.ones_like(factors)
+                anti_aliasing_sigma = np.atleast_1d(anti_aliasing_sigma) * np.ones_like(
+                    factors
+                )
                 if np.any(anti_aliasing_sigma < 0):
-                    raise ValueError("Anti-aliasing standard deviation must be " "greater than or equal to zero")
+                    raise ValueError(
+                        "Anti-aliasing standard deviation must be "
+                        "greater than or equal to zero"
+                    )
                 elif np.any((anti_aliasing_sigma > 0) & (factors <= 1)):
                     warnings.warn(
-                        "Anti-aliasing standard deviation greater than zero but " "not down-sampling along all axes"
+                        "Anti-aliasing standard deviation greater than zero but "
+                        "not down-sampling along all axes"
                     )
-            filtered = ndi.gaussian_filter(image, anti_aliasing_sigma, cval=cval, mode=ndi_mode)
+            filtered = ndi.gaussian_filter(
+                image, anti_aliasing_sigma, cval=cval, mode=ndi_mode
+            )
         else:
             filtered = image
 
         zoom_factors = [1 / f for f in factors]
-        out = ndi.zoom(filtered, zoom_factors, order=order, mode=ndi_mode, cval=cval, grid_mode=True)
+        out = ndi.zoom(
+            filtered,
+            zoom_factors,
+            order=order,
+            mode=ndi_mode,
+            cval=cval,
+            grid_mode=True,
+        )
 
         image = _clip_warp_output(image, out)
 
-        image = to_channel_dimension_format(image, input_data_format, ChannelDimension.LAST)
+        image = to_channel_dimension_format(
+            image, input_data_format, ChannelDimension.LAST
+        )
         image = (
-            to_channel_dimension_format(image, data_format, input_data_format) if data_format is not None else image
+            to_channel_dimension_format(image, data_format, input_data_format)
+            if data_format is not None
+            else image
         )
         return image
 
@@ -388,7 +411,7 @@ class Owlv2ImageProcessor(BaseImageProcessor):
                 The type of tensors to return. Can be one of:
                     - Unset: Return a list of `np.ndarray`.
                     - `TensorType.TENSORFLOW` or `'tf'`: Return a batch of type `tf.Tensor`.
-                    - `TensorType.PYTORCH` or `'pt'`: Return a batch of type `torch.Tensor`.
+                    - `TensorType.PYTORCH` or `'pt'`: Return a batch of type `ms.Tensor`.
                     - `TensorType.NUMPY` or `'np'`: Return a batch of type `np.ndarray`.
                     - `TensorType.JAX` or `'jax'`: Return a batch of type `jax.numpy.ndarray`.
             data_format (`ChannelDimension` or `str`, *optional*, defaults to `ChannelDimension.FIRST`):
@@ -404,7 +427,9 @@ class Owlv2ImageProcessor(BaseImageProcessor):
                 - `"none"` or `ChannelDimension.NONE`: image in (height, width) format.
         """
         do_rescale = do_rescale if do_rescale is not None else self.do_rescale
-        rescale_factor = rescale_factor if rescale_factor is not None else self.rescale_factor
+        rescale_factor = (
+            rescale_factor if rescale_factor is not None else self.rescale_factor
+        )
         do_pad = do_pad if do_pad is not None else self.do_pad
         do_resize = do_resize if do_resize is not None else self.do_resize
         do_normalize = do_normalize if do_normalize is not None else self.do_normalize
@@ -415,12 +440,15 @@ class Owlv2ImageProcessor(BaseImageProcessor):
 
         images = make_list_of_images(images)
 
-        validate_kwargs(captured_kwargs=kwargs.keys(), valid_processor_keys=self._valid_processor_keys)
+        validate_kwargs(
+            captured_kwargs=kwargs.keys(),
+            valid_processor_keys=self._valid_processor_keys,
+        )
 
         if not valid_images(images):
             raise ValueError(
                 "Invalid image type. Must be of type PIL.Image.Image, numpy.ndarray, "
-                "torch.Tensor, tf.Tensor or jax.ndarray."
+                "ms.Tensor, tf.Tensor or jax.ndarray."
             )
         # Here, pad and resize methods are different from the rest of image processors
         # as they don't have any resampling in resize()
@@ -450,12 +478,19 @@ class Owlv2ImageProcessor(BaseImageProcessor):
 
         if do_rescale:
             images = [
-                self.rescale(image=image, scale=rescale_factor, input_data_format=input_data_format)
+                self.rescale(
+                    image=image,
+                    scale=rescale_factor,
+                    input_data_format=input_data_format,
+                )
                 for image in images
             ]
 
         if do_pad:
-            images = [self.pad(image=image, input_data_format=input_data_format) for image in images]
+            images = [
+                self.pad(image=image, input_data_format=input_data_format)
+                for image in images
+            ]
 
         if do_resize:
             images = [
@@ -469,19 +504,30 @@ class Owlv2ImageProcessor(BaseImageProcessor):
 
         if do_normalize:
             images = [
-                self.normalize(image=image, mean=image_mean, std=image_std, input_data_format=input_data_format)
+                self.normalize(
+                    image=image,
+                    mean=image_mean,
+                    std=image_std,
+                    input_data_format=input_data_format,
+                )
                 for image in images
             ]
 
         images = [
-            to_channel_dimension_format(image, data_format, input_channel_dim=input_data_format) for image in images
+            to_channel_dimension_format(
+                image, data_format, input_channel_dim=input_data_format
+            )
+            for image in images
         ]
 
         data = {"pixel_values": images}
         return BatchFeature(data=data, tensor_type=return_tensors)
 
     def post_process_object_detection(
-        self, outputs, threshold: float = 0.1, target_sizes: Union[TensorType, List[Tuple]] = None
+        self,
+        outputs,
+        threshold: float = 0.1,
+        target_sizes: Union[TensorType, List[Tuple]] = None,
     ):
         """
         Converts the raw output of [`OwlViTForObjectDetection`] into final bounding boxes in (top_left_x, top_left_y,
@@ -492,7 +538,7 @@ class Owlv2ImageProcessor(BaseImageProcessor):
                 Raw outputs of the model.
             threshold (`float`, *optional*):
                 Score threshold to keep object detection predictions.
-            target_sizes (`torch.Tensor` or `List[Tuple[int, int]]`, *optional*):
+            target_sizes (`ms.Tensor` or `List[Tuple[int, int]]`, *optional*):
                 Tensor of shape `(batch_size, 2)` or list of tuples (`Tuple[int, int]`) containing the target size
                 `(height, width)` of each image in the batch. If unset, predictions will not be resized.
         Returns:
@@ -508,9 +554,9 @@ class Owlv2ImageProcessor(BaseImageProcessor):
                     "Make sure that you pass in as many target sizes as the batch dimension of the logits"
                 )
 
-        probs = ops.max(logits, axis=-1)
-        scores = ops.sigmoid(probs.values)
-        labels = probs.indices
+        values, indices = ops.max(logits, axis=-1)
+        scores = ops.sigmoid(values)
+        labels = indices
 
         # Convert to [x0, y0, x1, y1] format
         boxes = center_to_corners_format(boxes)
@@ -518,8 +564,8 @@ class Owlv2ImageProcessor(BaseImageProcessor):
         # Convert from relative [0, 1] to absolute [0, height] coordinates
         if target_sizes is not None:
             if isinstance(target_sizes, List):
-                img_h = mindspore.Tensor([i[0] for i in target_sizes])
-                img_w = mindspore.Tensor([i[1] for i in target_sizes])
+                img_h = ms.Tensor([i[0] for i in target_sizes])
+                img_w = ms.Tensor([i[1] for i in target_sizes])
             else:
                 img_h, img_w = target_sizes.unbind(1)
 
@@ -540,7 +586,9 @@ class Owlv2ImageProcessor(BaseImageProcessor):
         return results
 
     # Copied from transformers.models.owlvit.image_processing_owlvit.OwlViTImageProcessor.post_process_image_guided_detection
-    def post_process_image_guided_detection(self, outputs, threshold=0.0, nms_threshold=0.3, target_sizes=None):
+    def post_process_image_guided_detection(
+        self, outputs, threshold=0.0, nms_threshold=0.3, target_sizes=None
+    ):
         """
         Converts the output of [`OwlViTForObjectDetection.image_guided_detection`] into the format expected by the COCO
         api.
@@ -552,7 +600,7 @@ class Owlv2ImageProcessor(BaseImageProcessor):
                 Minimum confidence threshold to use to filter out predicted boxes.
             nms_threshold (`float`, *optional*, defaults to 0.3):
                 IoU threshold for non-maximum suppression of overlapping boxes.
-            target_sizes (`torch.Tensor`, *optional*):
+            target_sizes (`ms.Tensor`, *optional*):
                 Tensor of shape (batch_size, 2) where each entry is the (height, width) of the corresponding image in
                 the batch. If set, predicted normalized bounding boxes are rescaled to the target sizes. If left to
                 None, predictions will not be unnormalized.
@@ -565,9 +613,13 @@ class Owlv2ImageProcessor(BaseImageProcessor):
         logits, target_boxes = outputs.logits, outputs.target_pred_boxes
 
         if len(logits) != len(target_sizes):
-            raise ValueError("Make sure that you pass in as many target sizes as the batch dimension of the logits")
+            raise ValueError(
+                "Make sure that you pass in as many target sizes as the batch dimension of the logits"
+            )
         if target_sizes.shape[1] != 2:
-            raise ValueError("Each element of target_sizes must contain the size (h, w) of each image of the batch")
+            raise ValueError(
+                "Each element of target_sizes must contain the size (h, w) of each image of the batch"
+            )
 
         probs = ops.max(logits, axis=-1)
         scores = ops.sigmoid(probs.values)
@@ -582,7 +634,9 @@ class Owlv2ImageProcessor(BaseImageProcessor):
                     if not scores[idx][i]:
                         continue
 
-                    ious = box_iou(target_boxes[idx][i, :].unsqueeze(0), target_boxes[idx])[0][0]
+                    ious = box_iou(
+                        target_boxes[idx][i, :].unsqueeze(0), target_boxes[idx]
+                    )[0][0]
                     ious[i] = -1.0  # Mask self-IoU.
                     scores[idx][ious > nms_threshold] = 0.0
 
@@ -618,4 +672,4 @@ class Owlv2ImageProcessor(BaseImageProcessor):
 
         return results
 
-__all__ = ["OwlV2ImageProcessor"]
+__all__ = ["Owlv2ImageProcessor"]

@@ -20,9 +20,10 @@ from typing import List
 
 import numpy as np
 
+
 from ...processing_utils import ProcessorMixin
 from ...tokenization_utils_base import BatchEncoding
-from mindnlp.utils import is_mindspore_available
+from ....utils import is_mindspore_available
 
 
 class Owlv2Processor(ProcessorMixin):
@@ -46,7 +47,15 @@ class Owlv2Processor(ProcessorMixin):
         super().__init__(image_processor, tokenizer)
 
     # Copied from transformers.models.owlvit.processing_owlvit.OwlViTProcessor.__call__ with OWLViT->OWLv2
-    def __call__(self, text=None, images=None, query_images=None, padding="max_length", return_tensors="np", **kwargs):
+    def __call__(
+        self,
+        text=None,
+        images=None,
+        query_images=None,
+        padding="max_length",
+        return_tensors="np",
+        **kwargs,
+    ):
         """
         Main method to prepare for the model one or several text(s) and image(s). This method forwards the `text` and
         `kwargs` arguments to CLIPTokenizerFast's [`~CLIPTokenizerFast.__call__`] if `text` is not `None` to encode:
@@ -88,36 +97,52 @@ class Owlv2Processor(ProcessorMixin):
             )
 
         if text is not None:
-            if isinstance(text, str) or (isinstance(text, List) and not isinstance(text[0], List)):
-                encodings = [self.tokenizer(text, padding=padding, return_tensors=return_tensors, **kwargs)]
+            if isinstance(text, str) or (
+                isinstance(text, List) and not isinstance(text[0], List)
+            ):
+                encodings = [
+                    self.tokenizer(
+                        text, padding=padding, return_tensors=return_tensors, **kwargs
+                    )
+                ]
 
             elif isinstance(text, List) and isinstance(text[0], List):
                 encodings = []
 
                 # Maximum number of queries across batch
-                max_num_queries = max([len(t) for t in text])
+                max_num_queries = max(len(t) for t in text)
 
                 # Pad all batch samples to max number of text queries
                 for t in text:
                     if len(t) != max_num_queries:
                         t = t + [" "] * (max_num_queries - len(t))
 
-                    encoding = self.tokenizer(t, padding=padding, return_tensors=return_tensors, **kwargs)
+                    encoding = self.tokenizer(
+                        t, padding=padding, return_tensors=return_tensors, **kwargs
+                    )
                     encodings.append(encoding)
             else:
-                raise TypeError("Input text should be a string, a list of strings or a nested list of strings")
+                raise TypeError(
+                    "Input text should be a string, a list of strings or a nested list of strings"
+                )
 
             if return_tensors == "np":
-                input_ids = np.concatenate([encoding["input_ids"] for encoding in encodings], axis=0)
-                attention_mask = np.concatenate([encoding["attention_mask"] for encoding in encodings], axis=0)
-
+                input_ids = np.concatenate(
+                    [encoding["input_ids"] for encoding in encodings], axis=0
+                )
+                attention_mask = np.concatenate(
+                    [encoding["attention_mask"] for encoding in encodings], axis=0
+                )
 
             elif return_tensors == "ms" and is_mindspore_available():
-                import mindspore
                 from mindspore import ops
 
-                input_ids = ops.cat([encoding["input_ids"] for encoding in encodings], axis=0)
-                attention_mask = ops.cat([encoding["attention_mask"] for encoding in encodings], axis=0)
+                input_ids = ops.cat(
+                    [encoding["input_ids"] for encoding in encodings], axis=0
+                )
+                attention_mask = ops.cat(
+                    [encoding["attention_mask"] for encoding in encodings], axis=0
+                )
 
             else:
                 raise ValueError("Target return tensor type could not be returned")
@@ -134,7 +159,9 @@ class Owlv2Processor(ProcessorMixin):
             encoding["query_pixel_values"] = query_pixel_values
 
         if images is not None:
-            image_features = self.image_processor(images, return_tensors=return_tensors, **kwargs)
+            image_features = self.image_processor(
+                images, return_tensors=return_tensors, **kwargs
+            )
 
         if text is not None and images is not None:
             encoding["pixel_values"] = image_features.pixel_values
@@ -145,7 +172,7 @@ class Owlv2Processor(ProcessorMixin):
         elif text is not None or query_images is not None:
             return encoding
         else:
-            return BatchEncoding(data=dict(**image_features), tensor_type=return_tensors)
+            return BatchEncoding(data={**image_features}, tensor_type=return_tensors)
 
     # Copied from transformers.models.owlvit.processing_owlvit.OwlViTProcessor.post_process_object_detection with OWLViT->OWLv2
     def post_process_object_detection(self, *args, **kwargs):
@@ -179,6 +206,5 @@ class Owlv2Processor(ProcessorMixin):
         """
         return self.tokenizer.decode(*args, **kwargs)
 
-__all__ = [
-    "OwlV2Processor",
-]
+
+__all__ = ["Owlv2Processor"]
