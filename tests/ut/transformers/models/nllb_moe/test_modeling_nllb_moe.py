@@ -216,7 +216,9 @@ class NllbMoeModelTester:
 
         # append to next input_ids and
         next_input_ids = ops.cat([input_ids, next_tokens], axis=-1)
-        next_attention_mask = ops.cat([attention_mask, next_attn_mask], axis=-1)
+        next_attention_mask = ops.cat(
+            [attention_mask, next_attn_mask.astype(ms.bool_)], axis=-1
+        )
 
         output_from_no_past = model(next_input_ids, attention_mask=next_attention_mask)[
             "last_hidden_state"

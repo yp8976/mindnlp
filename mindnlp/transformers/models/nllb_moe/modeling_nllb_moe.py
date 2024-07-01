@@ -174,11 +174,9 @@ class NllbMoeSinusoidalPositionalEmbedding(nn.Cell):
         emb_weights = self.get_embedding(num_embeddings, embedding_dim, padding_idx)
         if hasattr(self, "weights"):
             # in construct put the weights on the correct dtype and device of the param
-            emb_weights = emb_weights.to(
-                dtype=self.weights.dtype
-            )
+            emb_weights = emb_weights.to(dtype=self.weights.dtype)
 
-        self.register_buffer("weights", emb_weights, persistent=False)
+        self.weights = emb_weights
 
     @staticmethod
     def get_embedding(
@@ -193,7 +191,7 @@ class NllbMoeSinusoidalPositionalEmbedding(nn.Cell):
         half_dim = embedding_dim // 2
         emb = math.log(10000) / (half_dim - 1)
         emb = ops.exp(ops.arange(half_dim, dtype=ms.int64).float() * -emb)
-        emb = ops.arange(num_embeddings, dtype=ops.int64).float().unsqueeze(
+        emb = ops.arange(num_embeddings, dtype=ms.int64).float().unsqueeze(
             1
         ) * emb.unsqueeze(0)
         emb = ops.cat([ops.sin(emb), ops.cos(emb)], axis=1).view(num_embeddings, -1)
@@ -230,10 +228,8 @@ class NllbMoeSinusoidalPositionalEmbedding(nn.Cell):
                 max_pos + self.offset, self.embedding_dim, self.padding_idx
             )
 
-        return (
-            self.weights.index_select(0, position_ids.view(-1))
-            .view(bsz, seq_len, self.weights.shape[-1])
-            .detach()
+        return self.weights.index_select(0, position_ids.view(-1)).view(
+            bsz, seq_len, self.weights.shape[-1]
         )
 
     def create_position_ids_from_inputs_embeds(
@@ -295,11 +291,11 @@ class NllbMoeTop2Router(nn.Cell):
         instance of the `Linear8bitLt` class by checking special attributes.
         """
         if not (hasattr(self.classifier, "SCB") or hasattr(self.classifier, "CB")):
-            self.classifier = self.classifier.to(self.dtype)
+            self.classifier = self.classifier.to_float(self.dtype)
 
     def normalize_router_probabilities(self, router_probs, top_1_mask, top_2_mask):
-        top_1_max_probs = (router_probs * top_1_mask).sum(dim=1)
-        top_2_max_probs = (router_probs * top_2_mask).sum(dim=1)
+        top_1_max_probs = (router_probs * top_1_mask).sum(axis=1)
+        top_2_max_probs = (router_probs * top_2_mask).sum(axis=1)
         denom_s = ops.clamp(
             top_1_max_probs + top_2_max_probs,
             min=ms.Tensor(np.finfo(ms.dtype_to_nptype(router_probs.dtype)).eps),
@@ -538,11 +534,11 @@ class NllbMoeSparseMLP(nn.Cell):
             masked_hidden_states[idx, token_indices] = ops.einsum(
                 "b,be->be", combining_weights, expert_output
             )
-        hidden_states = masked_hidden_states.sum(dim=0).reshape(
+        hidden_states = masked_hidden_states.sum(axis=0).reshape(
             batch_size, sequence_length, hidden_dim
         )
 
-        top_1_expert_index = ops.argmax(top_1_mask, axis=-1)
+        top_1_expert_index = ops.argmax(top_1_mask, dim=-1)
         return hidden_states, (router_probs, top_1_expert_index)
 
 
@@ -1130,11 +1126,9 @@ class NllbMoeEncoder(NllbMoePreTrainedModel):
         embed_dim = config.d_model
         self.padding_idx = config.pad_token_id
         self.max_source_positions = config.max_position_embeddings
-        embed_scale = math.sqrt(embed_dim) if config.scale_embedding else 1.0
+        self.embed_scale = math.sqrt(embed_dim) if config.scale_embedding else 1.0
 
-        self.embed_tokens = NllbMoeScaledWordEmbedding(
-            config.vocab_size, embed_dim, self.padding_idx, embed_scale=embed_scale
-        )
+        self.embed_tokens = nn.Embedding(config.vocab_size, embed_dim, self.padding_idx)
 
         if embed_tokens is not None:
             self.embed_tokens.weight = embed_tokens.weight
@@ -1235,7 +1229,7 @@ class NllbMoeEncoder(NllbMoePreTrainedModel):
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
+            inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
 
         embed_pos = self.embed_positions(input_ids, inputs_embeds)
         # embed_pos = embed_pos.to(inputs_embeds.device)
@@ -2013,8 +2007,7 @@ class NllbMoeForConditionalGeneration(NllbMoePreTrainedModel):
         for layer_past in past_key_values:
             reordered_past += (
                 tuple(
-                    past_state.index_select(0, beam_idx)
-                    for past_state in layer_past
+                    past_state.index_select(0, beam_idx) for past_state in layer_past
                 ),
             )
         return reordered_past
