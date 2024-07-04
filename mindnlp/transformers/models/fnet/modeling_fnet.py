@@ -110,7 +110,9 @@ class FNetEmbeddings(nn.Cell):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
-        self.position_ids = ops.arange(config.max_position_embeddings).expand((1, -1))
+        self.position_ids = ops.arange(config.max_position_embeddings).broadcast_to(
+            (1, -1)
+        )
 
         self.token_type_ids = ops.zeros(self.position_ids.shape, dtype=ms.int64)
 
@@ -133,7 +135,7 @@ class FNetEmbeddings(nn.Cell):
         if token_type_ids is None:
             if hasattr(self, "token_type_ids"):
                 buffered_token_type_ids = self.token_type_ids[:, :seq_length]
-                buffered_token_type_ids_expanded = buffered_token_type_ids.expand(
+                buffered_token_type_ids_expanded = buffered_token_type_ids.broadcast_to(
                     input_shape[0], seq_length
                 )
                 token_type_ids = buffered_token_type_ids_expanded
@@ -190,7 +192,7 @@ class FNetBasicFourierTransform(nn.Cell):
         # https://pytorch.org/docs/master/generated/torch.vmap.html. Note that fourier transform methods will need
         # change accordingly.
         hidden_states = hidden_states.astype(ms.complex64)
-        outputs = self.fourier_transform(hidden_states).real
+        outputs = self.fourier_transform(hidden_states)
         return (outputs,)
 
 
@@ -214,7 +216,8 @@ class FNetFourierTransform(nn.Cell):
 
     def construct(self, hidden_states):
         self_outputs = self.self(hidden_states)
-        fourier_output = self.output(self_outputs[0], hidden_states)
+        fourier_output = self.output(self_outputs[0].astype(ms.float32), hidden_states)
+        # print("1111111111111", hidden_states)
         outputs = (fourier_output,)
         return outputs
 
@@ -950,7 +953,7 @@ class FNetForSequenceClassification(FNetPreTrainedModel):
             if self.config.problem_type is None:
                 if self.num_labels == 1:
                     self.config.problem_type = "regression"
-                elif self.num_labels > 1 and (labels.dtype in (ms.long, ms.int32)):
+                elif self.num_labels > 1 and (labels.dtype in (ms.int64, ms.int32)):
                     self.config.problem_type = "single_label_classification"
                 else:
                     self.config.problem_type = "multi_label_classification"
