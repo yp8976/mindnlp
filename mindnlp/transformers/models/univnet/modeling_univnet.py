@@ -522,8 +522,7 @@ class UnivNetModel(PreTrainedModel):
             config.model_hidden_channels,
             kernel_size=7,
             stride=1,
-            padding=3,
-            pad_mode="pad",
+            pad_mode="valid",
             has_bias=True,
         )
 
@@ -546,7 +545,7 @@ class UnivNetModel(PreTrainedModel):
             ]
         )
         self.conv_post = nn.Conv1d(
-            config.model_hidden_channels, 1, 7, padding=3, pad_mode="pad", has_bias=True
+            config.model_hidden_channels, 1, 7, pad_mode="valid", has_bias=True
         )
         # Initialize weights and apply final processing
         self.post_init()
@@ -640,13 +639,14 @@ class UnivNetModel(PreTrainedModel):
         # Change shapes to have channels before sequence lengths
         hidden_states = noise_sequence.swapaxes(2, 1)
         input_features = input_features.swapaxes(2, 1)
-
+        hidden_states = ops.pad(hidden_states, (3, 3), mode="reflect")
         hidden_states = self.conv_pre(hidden_states)
 
         for resblock in self.resblocks:
             hidden_states = resblock(hidden_states, input_features)
 
         hidden_states = ops.leaky_relu(hidden_states, self.leaky_relu_slope)
+        hidden_states = ops.pad(hidden_states, (3, 3), mode="reflect")
         hidden_states = self.conv_post(hidden_states)
         hidden_states = ops.tanh(hidden_states)
 
