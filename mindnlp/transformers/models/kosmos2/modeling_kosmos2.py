@@ -415,7 +415,7 @@ class Kosmos2VisionEmbeddings(nn.Cell):
             kernel_size=self.patch_size,
             stride=self.patch_size,
             has_bias=False,
-            pad_mode="pad",
+            pad_mode="valid",
         )
 
         self.num_patches = (self.image_size // self.patch_size) ** 2
