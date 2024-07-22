@@ -56,7 +56,7 @@ IMAGE_PROCESSOR_MAPPING_NAMES = OrderedDict(
         # ("deformable_detr", "DeformableDetrImageProcessor"),
         ("deit", "DeiTImageProcessor"),
         # ("depth_anything", "DPTImageProcessor"),
-        # ("deta", "DetaImageProcessor"),
+        ("deta", "DetaImageProcessor"),
         ("detr", "DetrImageProcessor"),
         # ("dinat", "ViTImageProcessor"),
         # ("dinov2", "BitImageProcessor"),
@@ -125,7 +125,9 @@ IMAGE_PROCESSOR_MAPPING_NAMES = OrderedDict(
     ]
 )
 
-IMAGE_PROCESSOR_MAPPING = _LazyAutoMapping(CONFIG_MAPPING_NAMES, IMAGE_PROCESSOR_MAPPING_NAMES)
+IMAGE_PROCESSOR_MAPPING = _LazyAutoMapping(
+    CONFIG_MAPPING_NAMES, IMAGE_PROCESSOR_MAPPING_NAMES
+)
 
 
 def image_processor_class_from_name(class_name: str):
@@ -145,7 +147,9 @@ def image_processor_class_from_name(class_name: str):
         if class_name in extractors:
             module_name = model_type_to_module_name(module_name)
 
-            module = importlib.import_module(f".{module_name}", "mindnlp.transformers.models")
+            module = importlib.import_module(
+                f".{module_name}", "mindnlp.transformers.models"
+            )
             try:
                 return getattr(module, class_name)
             except AttributeError:
@@ -239,7 +243,9 @@ def get_image_processor_config(
             FutureWarning,
         )
         if token is not None:
-            raise ValueError("`token` and `use_auth_token` are both specified. Please set only the argument `token`.")
+            raise ValueError(
+                "`token` and `use_auth_token` are both specified. Please set only the argument `token`."
+            )
         token = use_auth_token
 
     resolved_config_file = get_file_from_repo(
@@ -270,6 +276,7 @@ class AutoImageProcessor:
 
     This class cannot be instantiated directly using `__init__()` (throws an error).
     """
+
     def __init__(self):
         """
         Initializes an instance of AutoImageProcessor.
@@ -378,7 +385,9 @@ class AutoImageProcessor:
         config = kwargs.pop("config", None)
         kwargs["_from_auto"] = True
 
-        config_dict, _ = ImageProcessingMixin.get_image_processor_dict(pretrained_model_name_or_path, **kwargs)
+        config_dict, _ = ImageProcessingMixin.get_image_processor_dict(
+            pretrained_model_name_or_path, **kwargs
+        )
         image_processor_class = config_dict.get("image_processor_type", None)
         image_processor_auto_map = None
         if "AutoImageProcessor" in config_dict.get("auto_map", {}):
@@ -395,10 +404,16 @@ class AutoImageProcessor:
                     "PR/issue to update `preprocessor_config.json` to use `image_processor_type` instead of "
                     "`feature_extractor_type`. This warning will be removed in v4.40."
                 )
-                image_processor_class = feature_extractor_class.replace("FeatureExtractor", "ImageProcessor")
+                image_processor_class = feature_extractor_class.replace(
+                    "FeatureExtractor", "ImageProcessor"
+                )
             if "AutoFeatureExtractor" in config_dict.get("auto_map", {}):
-                feature_extractor_auto_map = config_dict["auto_map"]["AutoFeatureExtractor"]
-                image_processor_auto_map = feature_extractor_auto_map.replace("FeatureExtractor", "ImageProcessor")
+                feature_extractor_auto_map = config_dict["auto_map"][
+                    "AutoFeatureExtractor"
+                ]
+                image_processor_auto_map = feature_extractor_auto_map.replace(
+                    "FeatureExtractor", "ImageProcessor"
+                )
                 logger.warning(
                     "Could not find image processor auto map in the image processor config or the model config. "
                     "Loading based on pattern matching with the model's feature extractor configuration. Please open a "
@@ -410,14 +425,18 @@ class AutoImageProcessor:
         # If we don't find the image processor class in the image processor config, let's try the model config.
         if image_processor_class is None and image_processor_auto_map is None:
             if not isinstance(config, PretrainedConfig):
-                config = AutoConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
+                config = AutoConfig.from_pretrained(
+                    pretrained_model_name_or_path, **kwargs
+                )
             # It could be in `config.image_processor_type``
             image_processor_class = getattr(config, "image_processor_type", None)
             if hasattr(config, "auto_map") and "AutoImageProcessor" in config.auto_map:
                 image_processor_auto_map = config.auto_map["AutoImageProcessor"]
 
         if image_processor_class is not None:
-            image_processor_class = image_processor_class_from_name(image_processor_class)
+            image_processor_class = image_processor_class_from_name(
+                image_processor_class
+            )
 
         if image_processor_class is not None:
             return image_processor_class.from_dict(config_dict, **kwargs)
@@ -442,4 +461,6 @@ class AutoImageProcessor:
                 The configuration corresponding to the model to register.
             image_processor_class ([`ImageProcessingMixin`]): The image processor to register.
         """
-        IMAGE_PROCESSOR_MAPPING.register(config_class, image_processor_class, exist_ok=exist_ok)
+        IMAGE_PROCESSOR_MAPPING.register(
+            config_class, image_processor_class, exist_ok=exist_ok
+        )

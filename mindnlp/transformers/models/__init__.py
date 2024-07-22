@@ -68,6 +68,7 @@ from . import (
     deberta_v2,
     decision_transformer,
     deepseek_v2,
+    deta,
     detr,
     deit,
     dinov2,
@@ -274,6 +275,7 @@ from .deberta import *
 from .deberta_v2 import *
 from .decision_transformer import *
 from .deepseek_v2 import *
+from .deta import *
 from .detr import *
 from .deit import *
 from .dinov2 import *
@@ -429,7 +431,6 @@ from .xmod import *
 from .yolos import *
 
 
-
 __all__ = []
 __all__.extend(albert.__all__)
 __all__.extend(align.__all__)
@@ -485,6 +486,7 @@ __all__.extend(deit.__all__)
 __all__.extend(dinov2.__all__)
 __all__.extend(distilbert.__all__)
 __all__.extend(donut.__all__)
+__all__.extend(deta.__all__)
 __all__.extend(detr.__all__)
 __all__.extend(dpr.__all__)
 __all__.extend(dpt.__all__)
