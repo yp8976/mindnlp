@@ -149,8 +149,7 @@ class MgpstrEmbeddings(nn.Module):
             config.hidden_size,
             kernel_size=patch_size,
             stride=patch_size,
-            has_bias=True,
-            pad_mode="pad",
+            bias=True,
         )
 
         self.cls_token = ms.Parameter(ops.zeros(1, 1, config.hidden_size))
@@ -172,8 +171,8 @@ class MgpstrEmbeddings(nn.Module):
             1, 2
         )  # BCHW -> BNC
 
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
-        embedding_output = ops.cat((cls_tokens, patch_embeddings), axis=1)
+        cls_tokens = self.cls_token.broadcast_to((batch_size, -1, -1))
+        embedding_output = ops.cat((cls_tokens, patch_embeddings), dim=1)
         embedding_output = embedding_output + self.pos_embed
         embedding_output = self.pos_drop(embedding_output)
 
@@ -187,7 +186,7 @@ class MgpstrMlp(nn.Module):
         super().__init__()
         hidden_features = hidden_features or config.hidden_size
         self.fc1 = nn.Linear(config.hidden_size, hidden_features)
-        self.act = nn.GELU(approximate=False)
+        self.act = nn.GELU(approximate="none")
         self.fc2 = nn.Linear(hidden_features, config.hidden_size)
         self.drop = nn.Dropout(config.drop_rate)
 
@@ -208,7 +207,7 @@ class MgpstrAttention(nn.Module):
         self.scale = head_dim**-0.5
 
         self.qkv = nn.Linear(
-            config.hidden_size, config.hidden_size * 3, has_bias=config.qkv_bias
+            config.hidden_size, config.hidden_size * 3, bias=config.qkv_bias
         )
         self.attn_drop = nn.Dropout(config.attn_drop_rate)
         self.proj = nn.Linear(config.hidden_size, config.hidden_size)
@@ -228,7 +227,7 @@ class MgpstrAttention(nn.Module):
         )  # make torchscript happy (cannot use tensor as tuple)
 
         attention_probs = (query @ key.swapaxes(-2, -1)) * self.scale
-        attention_probs = nn.Softmax(axis=-1)(attention_probs)
+        attention_probs = ops.softmax(attention_probs, dim=-1)
         attention_probs = self.attn_drop(attention_probs)
 
         context_layer = (
@@ -242,13 +241,13 @@ class MgpstrAttention(nn.Module):
 class MgpstrLayer(nn.Module):
     def __init__(self, config: MgpstrConfig, drop_path=None):
         super().__init__()
-        self.norm1 = nn.LayerNorm([config.hidden_size], epsilon=config.layer_norm_eps)
+        self.norm1 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.attn = MgpstrAttention(config)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = (
             MgpstrDropPath(drop_path) if drop_path is not None else nn.Identity()
         )
-        self.norm2 = nn.LayerNorm([config.hidden_size], epsilon=config.layer_norm_eps)
+        self.norm2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         mlp_hidden_dim = int(config.hidden_size * config.mlp_ratio)
         self.mlp = MgpstrMlp(config, mlp_hidden_dim)
 
@@ -278,7 +277,7 @@ class MgpstrEncoder(nn.Module):
             for x in ops.linspace(0, config.drop_path_rate, config.num_hidden_layers)
         ]
 
-        self.blocks = nn.SequentialCell(
+        self.blocks = nn.Sequential(
             *[
                 MgpstrLayer(config=config, drop_path=dpr[i])
                 for i in range(config.num_hidden_layers)
@@ -324,32 +323,28 @@ class MgpstrEncoder(nn.Module):
 class MgpstrA3Module(nn.Module):
     def __init__(self, config: MgpstrConfig):
         super().__init__()
-        self.token_norm = nn.LayerNorm(
-            [config.hidden_size], epsilon=config.layer_norm_eps
-        )
+        self.token_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         if self.token_norm.bias is None:
             self.token_norm.bias.set_data(
                 initializer(
                     "zeros", self.token_norm.bias.shape, self.token_norm.bias.dtype
                 )
             )
-        self.tokenLearner = nn.SequentialCell(
+        self.tokenLearner = nn.Sequential(
             nn.Conv2d(
                 config.hidden_size,
                 config.hidden_size,
                 kernel_size=(1, 1),
                 stride=1,
-                group=8,
-                has_bias=False,
-                pad_mode="pad",
+                groups=8,
+                bias=False,
             ),
             nn.Conv2d(
                 config.hidden_size,
                 config.max_token_length,
                 kernel_size=(1, 1),
                 stride=1,
-                has_bias=False,
-                pad_mode="pad",
+                bias=False,
             ),
         )
         self.feat = nn.Conv2d(
@@ -357,11 +352,10 @@ class MgpstrA3Module(nn.Module):
             config.hidden_size,
             kernel_size=(1, 1),
             stride=1,
-            group=8,
-            has_bias=False,
-            pad_mode="pad",
+            groups=8,
+            bias=False,
         )
-        self.norm = nn.LayerNorm([config.hidden_size], epsilon=config.layer_norm_eps)
+        self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
     def _init_weights(self, module: Union[nn.Linear, nn.Conv2d, nn.LayerNorm]) -> None:
         """Initialize the weights"""
@@ -413,7 +407,7 @@ class MgpstrA3Module(nn.Module):
         hidden_states = hidden_states.swapaxes(1, 2).unsqueeze(-1)
         selected = self.tokenLearner(hidden_states)
         selected = selected.flatten(start_dim=2)
-        attentions = ops.softmax(selected, axis=-1)
+        attentions = ops.softmax(selected, dim=-1)
 
         feat = self.feat(hidden_states)
         feat = feat.flatten(start_dim=2).swapaxes(1, 2)

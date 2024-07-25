@@ -32,7 +32,7 @@ from ...test_modeling_common import ModelTesterMixin, _config_zero_init, floats_
 
 if is_mindspore_available():
     import mindspore as ms
-    from mindspore import nn
+    from mindnlp.core import nn
     from mindnlp.transformers import MgpstrForSceneTextRecognition, MgpstrModel
 
 
@@ -162,7 +162,7 @@ class MgpstrModelTest(ModelTesterMixin, unittest.TestCase):
             model = model_class(config)
             self.assertIsInstance(model.get_input_embeddings(), (nn.Module))
             x = model.get_output_embeddings()
-            self.assertTrue(x is None or isinstance(x, nn.Dense))
+            self.assertTrue(x is None or isinstance(x, nn.Linear))
 
     @unittest.skip(reason="MgpstrModel does not support feedforward chunking")
     def test_feed_forward_chunking(self):
@@ -224,7 +224,7 @@ class MgpstrModelTest(ModelTesterMixin, unittest.TestCase):
         for model_class in self.all_model_classes:
             model = model_class(config=configs_no_init)
             for name, param in model.parameters_and_names():
-                if isinstance(param, (nn.Dense, nn.Conv2d, nn.LayerNorm)):
+                if isinstance(param, (nn.Linear, nn.Conv2d, nn.LayerNorm)):
                     if param.requires_grad:
                         self.assertIn(
                             ((param.data.mean() * 1e9).round() / 1e9).item(),
@@ -276,7 +276,7 @@ class MgpstrModelIntegrationTest(unittest.TestCase):
                 ]
             ],
         )
-
+        # print("1111111111",outputs.logits[0][:, 1:4, 1:4].asnumpy())
         self.assertTrue(
             np.allclose(
                 outputs.logits[0][:, 1:4, 1:4].asnumpy(),
