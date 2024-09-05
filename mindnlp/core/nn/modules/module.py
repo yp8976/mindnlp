@@ -8,6 +8,7 @@ from collections import OrderedDict, namedtuple
 import mindspore
 from mindspore import Tensor, Parameter
 from mindspore.common._stub_tensor import StubTensor
+from mindspore.common.dtype import Float
 
 from ...utils import hooks
 from ...utils.hooks import RemovableHandle
@@ -22,6 +23,17 @@ class _IncompatibleKeys(namedtuple('IncompatibleKeys', ['missing_keys', 'unexpec
         return super().__repr__()
 
     __str__ = __repr__
+
+def _addindent(s_, numSpaces):
+    s = s_.split('\n')
+    # don't do anything for single-line stuff
+    if len(s) == 1:
+        return s_
+    first = s.pop(0)
+    s = [(numSpaces * ' ') + line for line in s]
+    s = '\n'.join(s)
+    s = first + '\n' + s
+    return s
 
 _EXTRA_STATE_KEY_SUFFIX = '_extra_state'
 
@@ -558,7 +570,7 @@ class Module:
                 if buffers is not None and name in buffers:
                     if value is not None and not isinstance(value, Tensor):
                         raise TypeError(f"cannot assign '{type(value)}' as buffer '{name}' "
-                                        "(torch.Tensor or None expected)"
+                                        "(mindspore.Tensor or None expected)"
                                         )
                     for hook in _global_buffer_registration_hooks.values():
                         output = hook(self, name, value)
@@ -573,11 +585,60 @@ class Module:
             del self._parameters[name]
         elif name in self._buffers:
             del self._buffers[name]
+            self._non_persistent_buffers_set.discard(name)
         elif name in self._modules:
             del self._modules[name]
         else:
-            object.__delattr__(self, name)
+            super().__delattr__(name)
 
+
+    def extra_repr(self) -> str:
+        r"""Set the extra representation of the module.
+
+        To print customized extra information, you should re-implement
+        this method in your own modules. Both single-line and multi-line
+        strings are acceptable.
+        """
+        return ''
+
+
+    def __repr__(self):
+        # We treat the extra repr like the sub-module, one item per line
+        extra_lines = []
+        extra_repr = self.extra_repr()
+        # empty string will be split into list ['']
+        if extra_repr:
+            extra_lines = extra_repr.split('\n')
+        child_lines = []
+        for key, module in self._modules.items():
+            mod_str = repr(module)
+            mod_str = _addindent(mod_str, 2)
+            child_lines.append('(' + key + '): ' + mod_str)
+        lines = extra_lines + child_lines
+
+        main_str = self._get_name() + '('
+        if lines:
+            # simple one-liner info, which most builtin Modules will use
+            if len(extra_lines) == 1 and not child_lines:
+                main_str += extra_lines[0]
+            else:
+                main_str += '\n  ' + '\n  '.join(lines) + '\n'
+
+        main_str += ')'
+        return main_str
+
+    def __dir__(self):
+        module_attrs = dir(self.__class__)
+        attrs = list(self.__dict__.keys())
+        parameters = list(self._parameters.keys())
+        modules = list(self._modules.keys())
+        buffers = list(self._buffers.keys())
+        keys = module_attrs + attrs + parameters + modules + buffers
+
+        # Eliminate attrs that are not legal Python variable names
+        keys = [key for key in keys if not key[0].isdigit()]
+
+        return sorted(keys)
 
     def cuda(self):
         return self
@@ -633,7 +694,7 @@ class Module:
                 input_param = state_dict[key]
                 if not isinstance(input_param, Tensor):
                     error_msgs.append(f'While copying the parameter named "{key}", '
-                                      'expected torch.Tensor or Tensor-like object from checkpoint but '
+                                      'expected mindspore.Tensor or Tensor-like object from checkpoint but '
                                       f'received {type(input_param)}'
                                       )
                     continue
@@ -816,12 +877,19 @@ class Module:
             >>> # xdoctest: +SKIP("undefined vars")
             >>> for param in model.parameters():
             >>>     print(type(param), param.shape)
-            <class 'torch.Tensor'> (20L,)
-            <class 'torch.Tensor'> (20L, 1L, 5L, 5L)
+            <class 'mindspore.Tensor'> (20L,)
+            <class 'mindspore.Tensor'> (20L, 1L, 5L, 5L)
 
         """
         for name, param in self.named_parameters(recurse=recurse):
             yield param
+
+    def trainable_params(self, recurse: bool = True):
+        params = tuple()
+        for name, param in self.named_parameters(recurse=recurse):
+            if param.requires_grad:
+                params += (param,)
+        return params
 
     def get_submodule(self, target: str) -> "Module":
         """Return the submodule given by ``target`` if it exists, otherwise throw an error.
@@ -936,15 +1004,15 @@ class Module:
                 are direct members of this module.
 
         Yields:
-            torch.Tensor: module buffer
+            mindspore.Tensor: module buffer
 
         Example::
 
             >>> # xdoctest: +SKIP("undefined vars")
             >>> for buf in model.buffers():
             >>>     print(type(buf), buf.shape)
-            <class 'torch.Tensor'> (20L,)
-            <class 'torch.Tensor'> (20L, 1L, 5L, 5L)
+            <class 'mindspore.Tensor'> (20L,)
+            <class 'mindspore.Tensor'> (20L, 1L, 5L, 5L)
 
         """
         for _, buf in self.named_buffers(recurse=recurse):
@@ -962,7 +1030,7 @@ class Module:
             remove_duplicate (bool, optional): whether to remove the duplicated buffers in the result. Defaults to True.
 
         Yields:
-            (str, torch.Tensor): Tuple containing the name and buffer
+            (str, mindspore.Tensor): Tuple containing the name and buffer
 
         Example::
 
@@ -1128,8 +1196,24 @@ class Module:
             p.requires_grad = requires_grad
         return self
 
-    def to(self, *args, **kwargs):
-        return self
+
+    def _get_name(self):
+        return self.__class__.__name__
+
+    def to(self, dtype=None):
+        def convert(t):
+            try:
+                return t.to(dtype) if isinstance(t.dtype, Float) else t
+            except NotImplementedError as e:
+                if str(e) == "Cannot copy out of meta tensor; no data!":
+                    raise NotImplementedError(
+                        f"{e} Please use torch.nn.Module.to_empty() instead of torch.nn.Module.to() "
+                        f"when moving module from meta to a different device."
+                    ) from None
+                else:
+                    raise
+
+        return self._apply(convert)
 
     def float(self: T) -> T:
         r"""Casts all floating point parameters and buffers to ``float`` datatype.
@@ -1232,7 +1316,7 @@ class Module:
                 Default: ``None``.
             prefix (str, optional): a prefix added to parameter and buffer
                 names to compose the keys in state_dict. Default: ``''``.
-            keep_vars (bool, optional): by default the :class:`~torch.Tensor` s
+            keep_vars (bool, optional): by default the :class:`~mindspore.Tensor` s
                 returned in the state dict are detached from autograd. If it's
                 set to ``True``, detaching will not be performed.
                 Default: ``False``.

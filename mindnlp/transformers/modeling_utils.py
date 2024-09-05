@@ -33,6 +33,7 @@ from zipfile import is_zipfile
 import mindspore
 from mindspore import Tensor
 from mindspore._c_expression import typing # pylint: disable=no-name-in-module, import-error
+from mindspore.communication import get_group_size
 from mindnlp.configs import GENERATOR_SEED
 from mindnlp.core import nn, ops, set_default_dtype, get_default_dtype
 from mindnlp.core.serialization import load, save_checkpoint, load_checkpoint, safe_save_file, safe_load_file
@@ -70,6 +71,8 @@ from ..utils import (
 )
 from ..utils.download import convert_file_size_to_int, get_checkpoint_shard_files
 
+from ..accelerate import infer_auto_device_map
+from ..accelerate.utils import get_balanced_memory, get_max_memory, check_tied_parameters_on_same_device, modify_model_for_pp_infer
 
 PARAM_RENAME_WARNING = "A parameter name that contains `{}` will be renamed internally to `{}`. Please use a different name to suppress this warning."
 
@@ -2500,12 +2503,27 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PeftAdapterM
                 proxies=proxies,
                 local_files_only=local_files_only,
                 _commit_hash=commit_hash,
+                mirror=mirror,
                 **adapter_kwargs,
             )
         if _adapter_model_path is not None and os.path.isfile(_adapter_model_path):
             with open(_adapter_model_path, "r", encoding="utf-8") as f:
                 _adapter_model_path = pretrained_model_name_or_path
                 pretrained_model_name_or_path = json.load(f)["base_model_name_or_path"]
+
+        # change device_map into a map if we passed an int, a str or a torch.device
+        if isinstance(device_map, str) and device_map not in ["auto", "balanced", "balanced_low_0", "sequential"]:
+            raise ValueError(
+                "When passing device_map as a string, the value needs to be "
+                f"'auto', 'balanced', 'balanced_low_0', 'sequential' but found {device_map}."
+            )
+        elif isinstance(device_map, int):
+            if device_map < 0:
+                raise ValueError(
+                    "You can't pass device_map as a negative int. If you want to put the model on the cpu, pass device_map = 'cpu' "
+                )
+            else:
+                device_map = {"": device_map}
 
         if device_map is not None:
             if low_cpu_mem_usage is None:
@@ -2905,6 +2923,66 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PeftAdapterM
             keep_in_fp32_modules = model._keep_in_fp32_modules
         else:
             keep_in_fp32_modules = []
+
+        try:
+            group_size = get_group_size()
+        except:
+            group_size = 1
+
+        if isinstance(device_map, str):
+            special_dtypes = {}
+
+            special_dtypes.update(
+                {
+                    name: mindspore.float32
+                    for name, _ in model.named_parameters()
+                    if any(m in name for m in keep_in_fp32_modules)
+                }
+            )
+
+            target_dtype = ms_dtype
+
+            no_split_modules = model._get_no_split_modules(device_map)
+            if device_map not in ["auto", "balanced", "balanced_low_0", "sequential"]:
+                raise ValueError(
+                    "If passing a string for `device_map`, please choose 'auto', 'balanced', 'balanced_low_0' or "
+                    "'sequential'."
+                )
+
+            device_map_kwargs = {"no_split_module_classes": no_split_modules}
+            if "special_dtypes" in inspect.signature(infer_auto_device_map).parameters:
+                device_map_kwargs["special_dtypes"] = special_dtypes
+            elif len(special_dtypes) > 0:
+                logger.warning(
+                    "This model has some weights that should be kept in higher precision, you need to upgrade "
+                    "`accelerate` to properly deal with them (`pip install --upgrade accelerate`)."
+                )
+            if device_map != "sequential":
+                max_memory = get_balanced_memory(
+                    model,
+                    dtype=target_dtype,
+                    low_zero=(device_map == "balanced_low_0"),
+                    max_memory=max_memory,
+                    **device_map_kwargs,
+                )
+            else:
+                max_memory = get_max_memory(max_memory)
+
+            device_map_kwargs["max_memory"] = max_memory
+
+            # Make sure tied weights are tied before creating the device map.
+            model.tie_weights()
+            device_map = infer_auto_device_map(model, dtype=target_dtype, **device_map_kwargs)
+
+        elif device_map is not None:
+            model.tie_weights()
+            tied_params = find_tied_parameters(model)
+            # check if we don't have tied param in different devices
+            check_tied_parameters_on_same_device(tied_params, device_map)
+
+        # replace unnessasery modules to nn.Identity and insert send/recv for pipeline inference.
+        if device_map is not None and group_size != 1:
+            model = modify_model_for_pp_infer(model, device_map, model._no_split_modules)
 
         if from_pt:
             # restore default dtype
@@ -3429,7 +3507,6 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PeftAdapterM
                     f"to the `bos_token_id` ({self.config.bos_token_id}), `eos_token_id` ({self.config.eos_token_id}), "
                     f"or the `sep_token_id` ({self.config.sep_token_id}), and your input is not padded."
                 )
-
             logger.warning_once(warn_string)
 
 
@@ -3838,7 +3915,7 @@ class SequenceSummary(nn.Module):
                 )
             else:
                 cls_index = cls_index.unsqueeze(-1).unsqueeze(-1)
-                cls_index = cls_index.broadcast_to((-1,) * (cls_index.ndim - 1) + (hidden_states.size(-1),))
+                cls_index = cls_index.broadcast_to((-1,) * (cls_index.ndim - 1) + (hidden_states.shape[-1],))
             # shape of cls_index: (bsz, XX, 1, hidden_size) where XX are optional leading dim of hidden_states
             output = ops.gather(hidden_states, -2, cls_index).squeeze(-2)  # shape (bsz, XX, hidden_size)
         elif self.summary_type == "attn":
@@ -3926,7 +4003,7 @@ def find_tied_parameters(model: nn.Module, **kwargs):
     </Tip>
 
     Args:
-        model (`torch.nn.Module`): The model to inspect.
+        model (`nn.Module`): The model to inspect.
 
     Returns:
         List[List[str]]: A list of lists of parameter names being all tied together.
@@ -3935,7 +4012,7 @@ def find_tied_parameters(model: nn.Module, **kwargs):
 
     ```py
     >>> from collections import OrderedDict
-    >>> import torch.nn as nn
+    >>> import nn as nn
 
     >>> model = nn.Sequential(OrderedDict([("linear1", nn.Linear(4, 4)), ("linear2", nn.Linear(4, 4))]))
     >>> model.linear2.weight = model.linear1.weight

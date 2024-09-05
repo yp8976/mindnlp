@@ -55,6 +55,8 @@ CONFIG_MAPPING_NAMES = OrderedDict(
         ("camembert", "CamembertConfig"),
         ("canine", "CanineConfig"),
         ("chatglm", "ChatGLMConfig"),
+        ("chatglm2", "ChatGLM2Config"),
+        ("chatglm3", "ChatGLM3Config"),
         ("chatglm4", "ChatGLM4Config"),
         ("clap", "ClapConfig"),
         ("clip", "CLIPConfig"),
@@ -101,10 +103,12 @@ CONFIG_MAPPING_NAMES = OrderedDict(
         ("fastspeech2_conformer", "FastSpeech2ConformerConfig"),
         ("fsmt","FSMTConfig"),
         ("gemma", "GemmaConfig"),
+        ("gemma2", "Gemma2Config"),
         ("git", "GitConfig"),
         ("gpt2", "GPT2Config"),
         ("gpt_bigcode", "GPTBigCodeConfig"),
         ("gptj", "GPTJConfig"),
+        ("gpt_neo", "GPTNeoConfig"),
         ("gpt_neox", "GPTNeoXConfig"),
         ("gpt_pangu", "GPTPanguConfig"),
         ("groupvit", "GroupViTConfig"),
@@ -143,6 +147,7 @@ CONFIG_MAPPING_NAMES = OrderedDict(
         ("olmo", "OlmoConfig"),
         ("oneformer", "OneFormerConfig"),
         ("openelm", "OpenELMConfig"),
+        ("openai-gpt", "OpenAIGPTConfig"),
         ("opt", "OPTConfig"),
         ("owlv2", "Owlv2Config"),
         ("owlvit", "OwlViTConfig"),
@@ -165,6 +170,7 @@ CONFIG_MAPPING_NAMES = OrderedDict(
         ("rembert", "RemBertConfig"),
         ("resnet", "ResNetConfig"),
         ("roberta", "RobertaConfig"),
+        ("roberta-prelayernorm", "RobertaPreLayerNormConfig"),
         ("roc_bert", "RoCBertConfig"),
         ("rwkv", "RwkvConfig"),
         ("sam", "SamConfig"),
@@ -202,6 +208,7 @@ CONFIG_MAPPING_NAMES = OrderedDict(
         ("vipllava", "VipLlavaConfig"),
         ("visual_bert", "VisualBertConfig"),
         ("vitdet", "VitDetConfig"),
+        ("vitmatte", "VitMatteConfig"),
         ("wav2vec2", "Wav2Vec2Config"),
         ("wavlm", "WavLMConfig"),
         ("wav2vec2-bert", "Wav2Vec2BertConfig"),
@@ -469,6 +476,8 @@ MODEL_NAMES_MAPPING = OrderedDict(
         ("canine", "CANINE"),
         ("chinese_clip", "Chinese-CLIP"),
         ("chatglm", "ChatGLM"),
+        ("chatglm2", "ChatGLM2"),
+        ("chatglm3", "ChatGLM3"),
         ("chatglm4", "ChatGLM4"),
         ("clap", "CLAP"),
         ("clip", "CLIP"),
@@ -532,6 +541,7 @@ MODEL_NAMES_MAPPING = OrderedDict(
         ("funnel", "Funnel Transformer"),
         ("fuyu", "Fuyu"),
         ("gemma", "Gemma"),
+        ("gemma2", "Gemma2"),
         ("git", "GIT"),
         ("glpn", "GLPN"),
         ("gpt-sw3", "GPT-Sw3"),
@@ -1427,6 +1437,8 @@ def fix_chatglm_name(config):
     elif 'chatglm2' in config['_name_or_path']:
         config['model_type'] = 'chatglm2'
         new_model_name = 'ChatGLM2'
+    else:
+        new_model_name = 'ChatGLM'
 
     for arch in config['architectures']:
         arch.replace('ChatGLM', new_model_name)
